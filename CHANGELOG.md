@@ -1,15 +1,11 @@
 # Changelog
 
-## v1.0.0
+## v0.0.1
 
-### Added or Changed
-- Added this changelog :)
-- Fixed typos in both templates
-- Back to top links
-- Added more "Built With" frameworks/libraries
-- Changed table of contents to start collapsed
-- Added checkboxes for major features on roadmap
-
-### Removed
-
-- Some packages/libraries from acknowledgements I no longer use
+### Added
+- Rules engine for 4 and 6 players: calling, trump, follow-suit and Joker rules, misdeal re-deal, scoring with the
+  first-failure penalty, and sets that end as soon as the result is decided.
+- Random and heuristic bots, plus a 1,000-game bot simulation test.
+- Mobile-first Svelte UI: start screen, table, deal and play animations, pass-and-play, light and dark mode.
+- Offline-capable PWA with app icons generated from the card art.
+- GitHub Pages deployment workflow.

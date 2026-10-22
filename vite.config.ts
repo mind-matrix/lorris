@@ -42,6 +42,7 @@ export default defineConfig(({ mode }) => ({
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',
+    setupFiles: ['scripts/vitest.setup.mjs'],
     testTimeout: 120_000,
   },
 }));

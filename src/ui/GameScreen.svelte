@@ -1,7 +1,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { getLegalActionsFromView, teamOf, type Action, type GameEvent, type PlayerView, type Seat } from '../core';
-  import type { GameSession } from '../net/protocol';
+  import type { GameSession, OnlineSession, TableInfo } from '../session/types';
+  import ConnectionNotice from './ConnectionNotice.svelte';
   import BidPanel from './BidPanel.svelte';
   import CardView from './CardView.svelte';
   import Hand from './Hand.svelte';
@@ -10,12 +11,27 @@
   import SetSummary from './SetSummary.svelte';
   import TrumpPicker from './TrumpPicker.svelte';
   import { TEAM_NAME } from './labels';
+  import { SHARE_MESSAGES, shareInvite } from './invite';
   import { DEAL_FLIGHT_MS, DEAL_STEP_MS, ROUND_LINGER_MS, dealDurationMs } from './timing';
 
-  let { session, names, onexit }: { session: GameSession; names: string[]; onexit: () => void } = $props();
+  let {
+    session,
+    onexit,
+    leaveQuestion = 'Leave this game?',
+    online = null,
+  }: {
+    session: GameSession;
+    onexit: () => void;
+    leaveQuestion?: string;
+    /** Set for online games, for reconnect/wait controls. */
+    online?: OnlineSession | null;
+  } = $props();
 
   // The UI only ever holds player views, one per human seat on this device.
   let views = $state<Record<Seat, PlayerView>>({});
+  // Names, seat statuses and connection state (fixed for local games).
+  let table = $state<TableInfo | null>(null);
+  const names = $derived(table?.seats.map((s) => s.name) ?? []);
   // Whose view is on screen. With several humans (pass-and-play) it follows the turn.
   let activeSeat = $state<Seat>(-1);
   let coverFor = $state<Seat | null>(null);
@@ -37,6 +53,7 @@
           followTurn(v);
         }),
       );
+      unsubscribers.push(current.subscribeTable((t) => (table = t)));
       return () => {
         unsubscribers.forEach((u) => u());
         clearTimeout(toastTimer);
@@ -79,7 +96,7 @@
   }
 
   function leave() {
-    if (view?.phase === 'gameOver' || confirm('Leave this game?')) onexit();
+    if (view?.phase === 'gameOver' || confirm(leaveQuestion)) onexit();
   }
 
   async function act(action: Action) {
@@ -185,7 +202,15 @@
 
 {#if view}
   <div class="screen">
-    <ScoreBar {view} onleave={leave} />
+    <ScoreBar
+      {view}
+      onleave={leave}
+      roomCode={online?.roomCode ?? null}
+      onshare={async () => {
+        const message = SHARE_MESSAGES[await shareInvite(online!.roomCode)];
+        if (message) showToast(message);
+      }}
+    />
 
     <main class="table" aria-label="Table">
       {#each view.handCounts as count, seat}
@@ -200,6 +225,7 @@
             bid={bidOf(seat)}
             called={view.phase !== 'bidding' && view.contract?.seat === seat ? view.contract.value : null}
             isMe={seat === activeSeat}
+            status={table?.seats[seat]?.kind === 'human' ? table.seats[seat].status : 'connected'}
           />
         </div>
       {/each}
@@ -247,6 +273,16 @@
 
       {#if toast}
         <div class="toast" role="status">{toast}</div>
+      {/if}
+
+      {#if table && table.connection.kind !== 'local' && table.connection.kind !== 'connected'}
+        <ConnectionNotice
+          inline
+          connection={table.connection}
+          onretry={online?.retry && (() => online.retry!())}
+          onkeepwaiting={online?.keepWaiting && (() => online.keepWaiting!())}
+          onleave={onexit}
+        />
       {/if}
     </main>
 

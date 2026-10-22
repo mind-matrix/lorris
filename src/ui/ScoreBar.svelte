@@ -1,8 +1,20 @@
 <script lang="ts">
   import { teamOf, type PlayerView, type Team } from '../core';
+  import { formatRoomCode } from '../net/roomCode';
   import { SUIT_NAME, SUIT_SYMBOL, TEAM_NAME, isRed } from './labels';
 
-  let { view, onleave }: { view: PlayerView; onleave: () => void } = $props();
+  let {
+    view,
+    onleave,
+    roomCode = null,
+    onshare,
+  }: {
+    view: PlayerView;
+    onleave: () => void;
+    /** Online games: the room code, shown on a Share button to re-invite a player who dropped out. */
+    roomCode?: string | null;
+    onshare?: () => void;
+  } = $props();
   const myTeam = $derived(teamOf(view.seat));
 
   // Once a call is made, each team's card shows its progress toward its own goal:
@@ -23,7 +35,15 @@
         Trump <b>{SUIT_SYMBOL[view.trump]}</b>
       </span>
     {/if}
-    <button class="btn secondary leave" onclick={onleave}>Leave</button>
+    {#if roomCode}
+      <button class="btn secondary share" onclick={onshare} aria-label="Share invite to room {formatRoomCode(roomCode)}">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M12 3v12M7 8l5-5 5 5M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="code">{formatRoomCode(roomCode)}</span>
+      </button>
+    {/if}
+    <button class="btn secondary leave" class:alone={!roomCode} onclick={onleave}>Leave</button>
   </div>
   <div class="scores">
     {#each [0, 1] as const as team}
@@ -74,11 +94,25 @@
   .trump.red b {
     color: var(--red-suit);
   }
-  .leave {
-    margin-left: auto;
+  .leave,
+  .share {
     min-height: 36px;
-    padding: 0 14px;
+    padding: 0 12px;
     font-size: 0.85rem;
+  }
+  /* Share and Leave sit together on the right. */
+  .share,
+  .leave.alone {
+    margin-left: auto;
+  }
+  .share {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .share .code {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    letter-spacing: 0.04em;
   }
   .scores {
     display: flex;

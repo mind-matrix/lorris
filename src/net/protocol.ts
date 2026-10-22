@@ -1,43 +1,69 @@
-// Interfaces for online play (later phase). Nothing here is implemented yet.
-//
-// Model: one peer is the host and runs GameHost with the full GameState. Every other
-// peer only ever receives its own PlayerView and sends actions back. The host
-// validates every action with the core reducer, so a modified client can't cheat.
-// A Trystero-based Transport will implement `Transport` below.
+// Wire protocol between the host and clients. See PROTOCOL.md for the full description.
 
-import type { Action, GameConfig, PlayerView, RuleError, Seat } from '../core';
+import type { Action, GameConfig, PlayerView, Seat } from '../core';
 
-/** What the UI talks to. Implemented by LocalSession now, and by a networked session later. */
-export interface GameSession {
-  /** Seats this device controls (more than one for pass-and-play). */
-  readonly seats: Seat[];
-  /** Receive the latest view for a seat. Called immediately with the current view. Returns an unsubscribe function. */
-  subscribe(seat: Seat, listener: (view: PlayerView) => void): () => void;
-  /** Ask the host to apply an action for a seat. Resolves to null on success or the rule error. */
-  submit(seat: Seat, action: Action): Promise<RuleError | null>;
-  /** Stop timers and release resources. */
-  close(): void;
+/** Bump whenever a message changes shape. HELLO and REJECTED must never change. */
+export const PROTOCOL_VERSION = 1;
+
+/** Fields every message carries. `seq` increases per sender. */
+export interface Envelope {
+  v: number;
+  seq: number;
 }
 
-export type PeerId = string;
+/** Public, per-seat lobby/table information. Never contains seat tokens. */
+export interface SeatInfo {
+  kind: 'empty' | 'human' | 'bot';
+  name: string;
+  /** Only meaningful for human seats. */
+  status: 'connected' | 'reconnecting' | 'bot-controlled';
+}
 
-/** Messages from the host to one peer. */
-export type HostMessage =
-  | { type: 'WELCOME'; seat: Seat; config: GameConfig }
-  | { type: 'VIEW'; view: PlayerView }
-  | { type: 'ACTION_RESULT'; requestId: number; error: RuleError | null }
-  | { type: 'SEAT_STATUS'; connected: boolean[] };
+export type RejectReason =
+  | 'VERSION_MISMATCH'
+  | 'ROOM_FULL'
+  | 'GAME_IN_PROGRESS'
+  | 'KICKED'
+  | 'RATE_LIMITED';
 
-/** Messages from a peer to the host. */
-export type PeerMessage =
-  | { type: 'JOIN'; name: string }
-  | { type: 'ACTION'; requestId: number; action: Action };
+// ---------- Client -> host ----------
 
-/** Minimal message channel between peers. */
-export interface Transport<Out, In> {
-  send(to: PeerId, message: Out): void;
-  onMessage(handler: (from: PeerId, message: In) => void): void;
-  onPeerJoin(handler: (peer: PeerId) => void): void;
-  onPeerLeave(handler: (peer: PeerId) => void): void;
-  close(): void;
+export type ClientMessageBody =
+  /** Join, or rejoin with a seat token. Shape frozen across versions. */
+  | { type: 'HELLO'; name: string; token: string | null }
+  | { type: 'ACTION'; requestId: number; action: Action }
+  /** Ask for a fresh copy of my view (after a gap in state versions). */
+  | { type: 'RESYNC' }
+  | { type: 'PING'; t: number }
+  /** Leaving on purpose. */
+  | { type: 'LEAVE' };
+
+// ---------- Host -> client ----------
+
+export type HostStatus = 'paused' | 'ended';
+
+export type HostMessageBody =
+  | { type: 'WELCOME'; seat: Seat; token: string; roomCode: string; config: GameConfig }
+  /** Shape frozen across versions so old clients can always show "please update". */
+  | { type: 'REJECTED'; reason: RejectReason; hostVersion: number }
+  /** Who sits where and whether they're connected. Sent whenever that changes, in the lobby and in game. */
+  | { type: 'LOBBY'; lobbyVersion: number; seats: SeatInfo[]; started: boolean }
+  /** This client's view of the game; nothing about other players' hidden cards. */
+  | { type: 'VIEW'; stateVersion: number; view: PlayerView }
+  | { type: 'ACTION_RESULT'; requestId: number; error: { code: string; message: string } | null }
+  /** Carries the latest versions so a client can tell it missed something and ask to RESYNC. */
+  | { type: 'PONG'; t: number; stateVersion: number; lobbyVersion: number }
+  | { type: 'HOST_STATUS'; status: HostStatus; message: string };
+
+export type ClientMessage = Envelope & ClientMessageBody;
+export type HostMessage = Envelope & HostMessageBody;
+export type ClientMessageType = ClientMessage['type'];
+export type HostMessageType = HostMessage['type'];
+
+/** Adds the envelope to outgoing messages. */
+export class Outbox {
+  private seq = 0;
+  wrap<B extends object>(body: B): Envelope & B {
+    return { v: PROTOCOL_VERSION, seq: ++this.seq, ...body };
+  }
 }

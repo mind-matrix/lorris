@@ -11,6 +11,7 @@
     bid,
     called,
     isMe,
+    status = 'connected',
   }: {
     name: string;
     seat: Seat;
@@ -20,6 +21,8 @@
     bid: number | 'pass' | null;
     called: number | null;
     isMe: boolean;
+    /** Online only: is this seat's player here, reconnecting, or covered by a bot? */
+    status?: 'connected' | 'reconnecting' | 'bot-controlled';
   } = $props();
 </script>
 
@@ -33,6 +36,11 @@
       <CardView card="back" label="" />
       <span>{cardCount}</span>
     </div>
+  {/if}
+  {#if status === 'reconnecting'}
+    <div class="conn reconnecting" title="Reconnecting">● Reconnecting</div>
+  {:else if status === 'bot-controlled'}
+    <div class="conn" title="A bot is playing this seat until they're back">Bot playing</div>
   {/if}
   {#if called !== null}
     <div class="bubble called">Called {called}</div>
@@ -97,6 +105,15 @@
     border-radius: 8px;
     background: var(--bg);
     font-weight: 600;
+  }
+  .conn {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .conn.reconnecting {
+    color: var(--accent);
   }
   .called {
     background: var(--team-color);

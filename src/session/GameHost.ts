@@ -19,20 +19,43 @@ type Listener = (view: PlayerView) => void;
  */
 export class GameHost {
   private state: GameState;
+  /** Increases on every accepted action. Sent to clients so they can spot stale views. */
+  private stateVersion: number;
   private listeners = new Map<Seat, Set<Listener>>();
   private changeListeners = new Set<() => void>();
 
-  constructor(config: GameConfig, seed: number) {
-    this.state = createGame(config, seed);
+  constructor(config: GameConfig, seed: number);
+  constructor(snapshot: { state: GameState; version: number });
+  constructor(a: GameConfig | { state: GameState; version: number }, seed?: number) {
+    if ('state' in a) {
+      this.state = a.state;
+      this.stateVersion = a.version;
+    } else {
+      this.state = createGame(a, seed!);
+      this.stateVersion = 1;
+    }
   }
 
   get config(): GameConfig {
     return this.state.config;
   }
 
+  get version(): number {
+    return this.stateVersion;
+  }
+
   /** Public information only (no hands, no RNG). Used for scheduling bots. */
   get turn(): Seat | null {
     return this.state.turn;
+  }
+
+  get phase(): GameState['phase'] {
+    return this.state.phase;
+  }
+
+  /** The full state, for saving the game so the host can resume it. Never send this to anyone. */
+  snapshot(): { state: GameState; version: number } {
+    return { state: this.state, version: this.stateVersion };
   }
 
   view(seat: Seat): PlayerView {
@@ -47,6 +70,7 @@ export class GameHost {
     const result = applyAction(this.state, seat, action);
     if (!result.ok) return result.error;
     this.state = result.state;
+    this.stateVersion++;
     for (const [s, set] of this.listeners) {
       const view = this.view(s);
       for (const l of set) l(view);

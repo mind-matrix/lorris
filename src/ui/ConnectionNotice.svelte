@@ -44,6 +44,14 @@
   <div class="banner" class:inline role="status">
     <span class="dot"></span> Waiting for the host · {countdown(connection.deadline)}
   </div>
+{:else if connection.kind === 'waiting-to-resume'}
+  <div class="dialog-backdrop">
+    <div class="dialog" role="status">
+      <p><b>Waiting for {connection.hostName} to resume the game</b></p>
+      <p class="small">You'll rejoin your seat automatically as soon as they reopen it.</p>
+      <button class="btn secondary" onclick={onleave}>Leave</button>
+    </div>
+  </div>
 {:else if connection.kind === 'host-timeout'}
   <div class="dialog-backdrop">
     <div class="dialog" role="alertdialog" aria-labelledby="cn-title">

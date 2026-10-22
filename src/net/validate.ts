@@ -8,8 +8,11 @@ import {
   PROTOCOL_VERSION,
   type ClientMessage,
   type HostMessage,
+  type JoinPolicy,
   type RejectReason,
+  type SeatDeniedReason,
   type SeatInfo,
+  type TableSummary,
 } from './protocol';
 
 export type Parsed<T> = { ok: true; message: T } | { ok: false; reason: string };
@@ -96,6 +99,11 @@ export function parseClientMessage(raw: unknown): Parsed<ClientMessage> {
       return isInt(m.t, 0) ? { ok: true, message: { ...base, type: 'PING', t: m.t } } : { ok: false, reason: 'bad ping' };
     case 'LEAVE':
       return { ok: true, message: { ...base, type: 'LEAVE' } };
+    case 'PAUSE_REQUEST':
+      return { ok: true, message: { ...base, type: 'PAUSE_REQUEST' } };
+    case 'TAKE_SEAT':
+      if (!(m.seat === null || isInt(m.seat, 0, 11))) return { ok: false, reason: 'bad seat' };
+      return { ok: true, message: { ...base, type: 'TAKE_SEAT', seat: m.seat as number | null } };
     default:
       return { ok: false, reason: 'unknown type' };
   }
@@ -107,13 +115,53 @@ function parseSeats(x: unknown): SeatInfo[] | null {
   if (!Array.isArray(x) || x.length > 12) return null;
   const seats: SeatInfo[] = [];
   for (const s of x) {
-    if (!isObj(s) || !['empty', 'human', 'bot'].includes(s.kind as string)) return null;
+    if (!isObj(s) || !['empty', 'human', 'bot', 'reserved'].includes(s.kind as string)) return null;
     if (!['connected', 'reconnecting', 'bot-controlled'].includes(s.status as string)) return null;
     if (!isStr(s.name, NET_CONFIG.maxNameLength * 2)) return null;
-    seats.push({ kind: s.kind as SeatInfo['kind'], name: cleanName(s.name) ?? '', status: s.status as SeatInfo['status'] });
+    if (s.reservedMs !== undefined && !isInt(s.reservedMs, 0, 24 * 3600_000)) return null;
+    const seat: SeatInfo = { kind: s.kind as SeatInfo['kind'], name: cleanName(s.name) ?? '', status: s.status as SeatInfo['status'] };
+    if (s.reservedMs !== undefined) seat.reservedMs = s.reservedMs;
+    seats.push(seat);
   }
   return seats;
 }
+
+function parsePolicy(x: unknown): JoinPolicy | null {
+  if (!isObj(x) || typeof x.midGameJoins !== 'boolean' || typeof x.autoAssign !== 'boolean') return null;
+  return { midGameJoins: x.midGameJoins, autoAssign: x.autoAssign };
+}
+
+const isPair = (x: unknown, min: number, max: number): x is [number, number] =>
+  Array.isArray(x) && x.length === 2 && x.every((n) => isInt(n, min, max));
+
+function parseTable(x: unknown, seatCount: number): TableSummary | null | undefined {
+  if (x === null) return null;
+  if (!isObj(x)) return undefined;
+  const okContract = x.contract === null || (isObj(x.contract) && isInt(x.contract.seat, 0, seatCount - 1) && isInt(x.contract.value, 0, 99));
+  const ok =
+    isInt(x.setNumber, 0) &&
+    ['bidding', 'choosingTrump', 'playing', 'setOver', 'gameOver'].includes(x.phase as string) &&
+    isPair(x.scores, -1e6, 1e6) &&
+    isPair(x.tricksWon, 0, 99) &&
+    (x.trump === null || SUITS.includes(x.trump as never)) &&
+    okContract &&
+    Array.isArray(x.handCounts) && x.handCounts.length === seatCount && x.handCounts.every((c) => isInt(c, 0, 64)) &&
+    (x.turn === null || isInt(x.turn, 0, seatCount - 1));
+  if (!ok) return undefined;
+  const c = x.contract as Obj | null;
+  return {
+    setNumber: x.setNumber as number,
+    phase: x.phase as TableSummary['phase'],
+    scores: x.scores as [number, number],
+    tricksWon: x.tricksWon as [number, number],
+    trump: x.trump as TableSummary['trump'],
+    contract: c ? { seat: c.seat as number, value: c.value as number } : null,
+    handCounts: x.handCounts as number[],
+    turn: x.turn as number | null,
+  };
+}
+
+const DENIED_REASONS: SeatDeniedReason[] = ['SEAT_TAKEN', 'RESERVED', 'NOT_OPEN', 'JOINS_DISABLED', 'NO_OPEN_SEATS', 'SEAT_EXPIRED'];
 
 /**
  * Checks the parts of a player view the UI relies on. The host is another player's device,
@@ -151,8 +199,28 @@ export function parseHostMessage(raw: unknown): Parsed<HostMessage> {
       return { ok: true, message: { ...base, type: 'REJECTED', reason: m.reason as RejectReason, hostVersion: m.hostVersion } };
     case 'LOBBY': {
       const seats = parseSeats(m.seats);
-      if (!seats || !isInt(m.lobbyVersion, 0) || typeof m.started !== 'boolean') return { ok: false, reason: 'bad lobby' };
-      return { ok: true, message: { ...base, type: 'LOBBY', lobbyVersion: m.lobbyVersion, seats, started: m.started } };
+      const policy = parsePolicy(m.policy);
+      const table = seats ? parseTable(m.table, seats.length) : undefined;
+      const p = m.pause;
+      const pause =
+        isObj(p) && typeof p.paused === 'boolean' && typeof p.resuming === 'boolean' && (p.by === null || isInt(p.by, 0, 11))
+          ? { paused: p.paused, resuming: p.resuming, by: p.by as number | null }
+          : null;
+      if (!seats || !policy || !pause || table === undefined || !isInt(m.lobbyVersion, 0) || typeof m.started !== 'boolean') {
+        return { ok: false, reason: 'bad lobby' };
+      }
+      return { ok: true, message: { ...base, type: 'LOBBY', lobbyVersion: m.lobbyVersion, seats, started: m.started, policy, table, pause } };
+    }
+    case 'SEAT_DENIED':
+      if (!DENIED_REASONS.includes(m.reason as SeatDeniedReason)) return { ok: false, reason: 'bad denial' };
+      return { ok: true, message: { ...base, type: 'SEAT_DENIED', reason: m.reason as SeatDeniedReason } };
+    case 'EVENT': {
+      const e = m.event;
+      if (isObj(e) && e.kind === 'pause-declined') return { ok: true, message: { ...base, type: 'EVENT', event: { kind: 'pause-declined' } } };
+      const name = isObj(e) ? cleanName(e.name) : null;
+      // 'pause-requested' is host-local and never valid from the network.
+      if (!isObj(e) || (e.kind !== 'took-seat' && e.kind !== 'returned') || !isInt(e.seat, 0, 11) || !name) return { ok: false, reason: 'bad event' };
+      return { ok: true, message: { ...base, type: 'EVENT', event: { kind: e.kind, seat: e.seat, name } } };
     }
     case 'VIEW':
       if (!isInt(m.stateVersion, 0) || !isPlayerView(m.view)) return { ok: false, reason: 'bad view' };
@@ -167,9 +235,12 @@ export function parseHostMessage(raw: unknown): Parsed<HostMessage> {
     case 'PONG':
       if (!isInt(m.t, 0) || !isInt(m.stateVersion, 0) || !isInt(m.lobbyVersion, 0)) return { ok: false, reason: 'bad pong' };
       return { ok: true, message: { ...base, type: 'PONG', t: m.t, stateVersion: m.stateVersion, lobbyVersion: m.lobbyVersion } };
-    case 'HOST_STATUS':
-      if (!['paused', 'ended'].includes(m.status as string) || !isStr(m.message, 300)) return { ok: false, reason: 'bad status' };
-      return { ok: true, message: { ...base, type: 'HOST_STATUS', status: m.status as 'paused' | 'ended', message: m.message } };
+    case 'HOST_STATUS': {
+      if (!['paused', 'ended', 'saved'].includes(m.status as string) || !isStr(m.message, 300)) return { ok: false, reason: 'bad status' };
+      if (m.label !== undefined && !isStr(m.label, 200)) return { ok: false, reason: 'bad status' };
+      const status = m.status as 'paused' | 'ended' | 'saved';
+      return { ok: true, message: { ...base, type: 'HOST_STATUS', status, message: m.message, ...(m.label !== undefined ? { label: m.label as string } : {}) } };
+    }
     default:
       return { ok: false, reason: 'unknown type' };
   }

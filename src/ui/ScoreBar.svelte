@@ -8,12 +8,15 @@
     onleave,
     roomCode = null,
     onshare,
+    isHost = false,
   }: {
     view: PlayerView;
     onleave: () => void;
     /** Online games: the room code, shown on a Share button to re-invite a player who dropped out. */
     roomCode?: string | null;
     onshare?: () => void;
+    /** The host's button opens the Room sheet (with sharing inside) instead of sharing directly. */
+    isHost?: boolean;
   } = $props();
   const myTeam = $derived(teamOf(view.seat));
 
@@ -36,10 +39,20 @@
       </span>
     {/if}
     {#if roomCode}
-      <button class="btn secondary share" onclick={onshare} aria-label="Share invite to room {formatRoomCode(roomCode)}">
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-          <path d="M12 3v12M7 8l5-5 5 5M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+      <button
+        class="btn secondary share"
+        onclick={onshare}
+        aria-label={isHost ? `Room ${formatRoomCode(roomCode)}: invite and settings` : `Share invite to room ${formatRoomCode(roomCode)}`}
+      >
+        {#if isHost}
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+          </svg>
+        {:else}
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <path d="M12 3v12M7 8l5-5 5 5M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        {/if}
         <span class="code">{formatRoomCode(roomCode)}</span>
       </button>
     {/if}

@@ -26,6 +26,13 @@ export const NET_CONFIG = {
   peerTimeoutMs: 9_000,
   /** How long a disconnected player has before a bot plays their seat. */
   botTakeoverMs: 30_000,
+  /**
+   * How long a disconnected player's seat stays reserved for them. After that it becomes an
+   * open bot seat that a newcomer can take, and their seat token stops working.
+   */
+  seatReservationMs: 120_000,
+  /** Most newcomers (not yet seated) the host keeps track of at once. */
+  maxGuests: 12,
   /** How long clients wait for a missing host before asking whether to keep waiting. */
   hostWaitMs: 180_000,
   /** How long to look for a room before telling the player it couldn't be found. */

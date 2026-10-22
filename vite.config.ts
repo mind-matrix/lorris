@@ -1,9 +1,12 @@
 import { loadEnv } from 'vite';
+import pkg from './package.json';
 import { defineConfig } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { VitePWA } from 'vite-plugin-pwa';
 
+
 export default defineConfig(({ mode }) => ({
+  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   // Served from a sub-path on GitHub Pages (e.g. /lorris/); the deploy workflow sets BASE_PATH.
   base: loadEnv(mode, '.', 'BASE_PATH').BASE_PATH || '/',
   plugins: [

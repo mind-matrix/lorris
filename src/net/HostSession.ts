@@ -5,38 +5,57 @@ import { HeuristicBot, type Bot } from '../ai';
 import type { Action, GameConfig, GameState, PlayerView, Seat } from '../core';
 import { BotRunner, DEFAULT_PACING, type BotPacing } from '../session/BotRunner';
 import { GameHost } from '../session/GameHost';
-import { STORAGE_KEYS, type KeyValueStore } from '../session/storage';
+import { createEnvelope, type SaveEnvelope, type SavedSeat } from '../save/envelope';
+import { Autosaver, type SaveStore } from '../save/SaveStore';
 import type { HostControls, LobbySnapshot, OnlineSession, SessionError, TableInfo } from '../session/types';
 import { NET_CONFIG, type NetConfig } from './config';
 import {
+  DEFAULT_POLICY,
   HOST_SEAT,
   addBot,
   claimSeat,
   createLobby,
+  formerSeatForToken,
+  reclaimFormerSeat,
   freeSeat,
   kickSeat,
+  openBotSeats,
   publicSeats,
+  releaseSeat,
   renameSeat,
   seatForToken,
+  setPolicy,
   startLobby,
+  takeSeat,
   type Lobby,
 } from './lobby';
-import { Outbox, PROTOCOL_VERSION, type ClientMessage, type HostMessageBody, type SeatInfo } from './protocol';
+import {
+  Outbox,
+  PROTOCOL_VERSION,
+  type ClientMessage,
+  type HostMessageBody,
+  type JoinPolicy,
+  type PauseState,
+  type SeatDeniedReason,
+  type SeatInfo,
+  type TableEvent,
+  type TableSummary,
+} from './protocol';
 import { RateLimiter } from './rateLimiter';
 import { roomPassword } from './roomCode';
+import { botName } from './lobby';
 import type { PeerId, Transport } from './transport';
 import { parseClientMessage, versionOf } from './validate';
 
-/** Everything the host saves after each change, so it can resume after the app is closed. */
-export interface SavedHostGame {
-  roomCode: string;
-  lobby: Lobby;
-  lobbyVersion: number;
-  game: { state: GameState; version: number } | null;
-}
+/** The id of a hosted game's save: one per room, kept across save-and-resume. */
+export const hostedSaveId = (roomCode: string) => `room-${roomCode}`;
 
 interface PeerState {
   seat: Seat | null;
+  /** Name from HELLO, kept for when a newcomer picks a seat. */
+  name: string | null;
+  /** This peer's own seat token (the host stores only hashes in the lobby and saves). */
+  token: string | null;
   limiter: RateLimiter;
   strikes: number;
   lastSeq: number;
@@ -46,13 +65,14 @@ interface PeerState {
 
 export interface HostOptions {
   transport: Transport;
-  storage: KeyValueStore;
+  /** Where the game is autosaved after every move (omit to not save). */
+  saves?: SaveStore;
   roomCode: string;
   /** Required for a new room; ignored when resuming. */
   config?: GameConfig;
   hostName?: string;
-  /** Resume a saved game instead of starting a new room. */
-  saved?: SavedHostGame;
+  /** Resume a saved game (validated) instead of starting a new room. */
+  saved?: SaveEnvelope;
   seed?: number;
   pacing?: BotPacing;
   net?: NetConfig;
@@ -60,6 +80,8 @@ export interface HostOptions {
   /** Test hook: called with every message sent, and the full state at that moment. */
   onSend?: (to: PeerId, message: unknown, state: GameState | null) => void;
 }
+
+const PAUSED_ERROR = { code: 'PAUSED', message: 'The game is paused.' };
 
 export function newToken(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -72,7 +94,8 @@ export class HostSession implements OnlineSession, HostControls {
   readonly roomCode: string;
 
   private transport: Transport;
-  private storage: KeyValueStore;
+  private saves: SaveStore | null;
+  private autosaver: Autosaver | null;
   private net: NetConfig;
   private pacing: BotPacing;
   private makeBot: (seat: Seat) => Bot;
@@ -87,21 +110,26 @@ export class HostSession implements OnlineSession, HostControls {
 
   private peers = new Map<PeerId, PeerState>();
   private seatPeer = new Map<Seat, PeerId>();
+  /** Newcomers who said HELLO but have no seat yet (choosing one, or waiting for one to open). */
+  private guests = new Set<PeerId>();
   /** When each human seat lost contact (null = connected). */
   private lostAt: (number | null)[];
   private botControlled: boolean[];
+  private pause: PauseState = { paused: false, by: null, resuming: false };
 
   private outbox = new Outbox();
   private viewListeners = new Set<(view: PlayerView) => void>();
   private tableListeners = new Set<(t: TableInfo) => void>();
   private lobbyListeners = new Set<(l: LobbySnapshot) => void>();
+  private eventListeners = new Set<(e: TableEvent) => void>();
   private unsubscribers: (() => void)[] = [];
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private closed = false;
 
   constructor(opts: HostOptions) {
     this.transport = opts.transport;
-    this.storage = opts.storage;
+    this.saves = opts.saves ?? null;
+    this.autosaver = this.saves ? new Autosaver(this.saves, 'host') : null;
     this.roomCode = opts.roomCode;
     this.net = opts.net ?? NET_CONFIG;
     this.pacing = opts.pacing ?? DEFAULT_PACING;
@@ -109,13 +137,30 @@ export class HostSession implements OnlineSession, HostControls {
     this.onSendHook = opts.onSend;
     this.seed = opts.seed ?? crypto.getRandomValues(new Uint32Array(1))[0];
 
-    this.lobby = opts.saved?.lobby ?? createLobby(opts.config!, opts.hostName!, newToken());
-    this.lobbyVersion = opts.saved ? opts.saved.lobbyVersion + 1 : 1;
+    this.lobby = opts.saved ? HostSession.lobbyFromSave(opts.saved) : createLobby(opts.config!, opts.hostName!, newToken());
+    this.lobbyVersion = opts.saved ? (opts.saved.online?.lobbyVersion ?? 0) + 1 : 1;
     // After a resume, every remote human starts out "reconnecting" with a full takeover grace period.
     const now = Date.now();
     this.lostAt = this.lobby.seats.map((s, seat) => (opts.saved && seat !== HOST_SEAT && s.kind === 'human' ? now : null));
     this.botControlled = this.lobby.seats.map(() => false);
-    if (opts.saved?.game) this.startGame(new GameHost(opts.saved.game));
+    if (opts.saved) {
+      // A resumed game starts paused, waiting for players to come back before the host continues.
+      this.pause = { paused: true, by: HOST_SEAT, resuming: true };
+      this.startGame(new GameHost(opts.saved.game));
+    }
+  }
+
+  private static lobbyFromSave(save: SaveEnvelope): Lobby {
+    return {
+      config: save.game.state.config,
+      started: true,
+      policy: save.online?.policy ?? { ...DEFAULT_POLICY },
+      seats: save.seats.map((s, seat) =>
+        s.kind === 'human' && s.tokenHash
+          ? { kind: 'human', name: s.name, tokenHash: s.tokenHash }
+          : { kind: 'bot', name: s.kind === 'bot' ? s.name : botName(seat), tokenHash: null },
+      ),
+    };
   }
 
   /** Joins the room and starts listening. */
@@ -146,6 +191,11 @@ export class HostSession implements OnlineSession, HostControls {
     return () => this.tableListeners.delete(listener);
   }
 
+  subscribeEvents(listener: (e: TableEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
   subscribeLobby(listener: (l: LobbySnapshot) => void): () => void {
     this.lobbyListeners.add(listener);
     listener(this.lobbySnapshot());
@@ -154,7 +204,59 @@ export class HostSession implements OnlineSession, HostControls {
 
   async submit(seat: Seat, action: Action): Promise<SessionError | null> {
     if (seat !== HOST_SEAT || !this.game) return { code: 'INVALID_SEAT', message: 'That seat is not yours' };
+    if (this.pause.paused) return PAUSED_ERROR;
     return this.game.submit(seat, action);
+  }
+
+  // ---------- Pause, save and resume ----------
+
+  /** Pause now (the host's choice, or accepting `by`'s request). No moves, no bot thinking. */
+  pauseGame(by: Seat = HOST_SEAT): void {
+    if (!this.game || this.pause.paused || this.game.phase === 'gameOver') return;
+    this.pause = { paused: true, by, resuming: false };
+    this.runner?.setPaused(true);
+    this.changed({ lobby: true });
+  }
+
+  /** Turn down a player's pause request. */
+  declinePause(seat: Seat): void {
+    const peer = this.seatPeer.get(seat);
+    if (peer) this.send(peer, { type: 'EVENT', event: { kind: 'pause-declined' } });
+  }
+
+  /** Play on after a pause. Disconnect clocks start fresh: nobody loses a seat to the pause. */
+  unpauseGame(): void {
+    if (!this.pause.paused || this.pause.resuming) return;
+    const now = Date.now();
+    this.lostAt = this.lostAt.map((t) => (t === null ? null : now));
+    this.pause = { paused: false, by: null, resuming: false };
+    this.runner?.setPaused(false);
+    this.changed({ lobby: true });
+  }
+
+  /**
+   * After reopening a saved game: carry on. Players who haven't come back leave free bot seats
+   * (a bot plays them, newcomers may take them); if they return while it's still a bot, it's theirs.
+   */
+  continueResumed(): void {
+    if (!this.pause.resuming) return;
+    for (const [seat, s] of this.lobby.seats.entries()) {
+      if (seat !== HOST_SEAT && s.kind === 'human' && this.status(seat) !== 'connected') this.giveUpSeat(seat, true);
+    }
+    this.pause = { paused: true, by: HOST_SEAT, resuming: false };
+    this.unpauseGame();
+  }
+
+  /** From the pause screen: save, tell everyone the game can be resumed later, and close the room. */
+  async saveAndClose(): Promise<void> {
+    if (!this.game) return;
+    await this.saveNow();
+    const host = this.lobby.seats[HOST_SEAT].name;
+    const label = this.envelope().label.text;
+    for (const peer of [...this.seatPeer.values(), ...this.guests]) {
+      this.send(peer, { type: 'HOST_STATUS', status: 'saved', message: `Game saved. ${host} can resume it later.`, label });
+    }
+    setTimeout(() => this.close(), 300);
   }
 
   // ---------- Host controls ----------
@@ -182,6 +284,14 @@ export class HostSession implements OnlineSession, HostControls {
     this.runner?.schedule();
   }
 
+  setPolicy(policy: Partial<JoinPolicy>): void {
+    this.setLobby(setPolicy(this.lobby, policy));
+  }
+
+  releaseSeat(seat: Seat): void {
+    if (this.lobby.started && this.lobby.seats[seat]?.kind === 'human' && this.status(seat) !== 'connected') this.giveUpSeat(seat);
+  }
+
   start(): void {
     if (this.lobby.started) return;
     this.lobby = startLobby(this.lobby);
@@ -191,11 +301,10 @@ export class HostSession implements OnlineSession, HostControls {
 
   /** The host is leaving: end the game for everyone and forget the saved game. */
   leave(): void {
-    for (const peer of this.seatPeer.values()) {
+    for (const peer of [...this.seatPeer.values(), ...this.guests]) {
       this.send(peer, { type: 'HOST_STATUS', status: 'ended', message: 'The host ended the game.' });
     }
-    void this.storage.delete(STORAGE_KEYS.hostedGame(this.roomCode));
-    void this.storage.delete(STORAGE_KEYS.currentHosted);
+    void this.autosaver?.flush().then(() => this.saves?.delete(hostedSaveId(this.roomCode)));
     // Give the goodbye messages a moment to leave before dropping the connection.
     setTimeout(() => this.close(), 300);
   }
@@ -240,12 +349,37 @@ export class HostSession implements OnlineSession, HostControls {
     return this.lostAt[seat] === null ? 'connected' : 'reconnecting';
   }
 
+  /** Time left on a disconnected player's reservation (mid-game), or null if they're here. */
+  private reservedMs(seat: Seat): number | null {
+    const lost = this.lostAt[seat];
+    return lost === null ? null : Math.max(0, lost + this.net.seatReservationMs - Date.now());
+  }
+
   private seatsInfo(): SeatInfo[] {
-    return publicSeats(this.lobby, (seat) => this.status(seat));
+    const now = Date.now();
+    return publicSeats(this.lobby, (seat) => this.status(seat), (seat) => this.reservedMs(seat)).map((s) =>
+      s.reservedMs === undefined ? s : { ...s, reservedUntil: now + s.reservedMs },
+    );
+  }
+
+  /** Public facts about the game for newcomers deciding where to sit. No cards. */
+  private tableSummary(): TableSummary | null {
+    if (!this.game) return null;
+    const v = this.game.view(HOST_SEAT);
+    return {
+      setNumber: v.setNumber,
+      phase: v.phase,
+      scores: v.scores,
+      tricksWon: v.tricksWon,
+      trump: v.trump,
+      contract: v.contract && { seat: v.contract.seat, value: v.contract.value },
+      handCounts: v.handCounts,
+      turn: v.turn,
+    };
   }
 
   private tableInfo(): TableInfo {
-    return { seats: this.seatsInfo(), connection: { kind: 'connected' } };
+    return { seats: this.seatsInfo(), connection: { kind: 'connected' }, pause: this.pause };
   }
 
   private lobbySnapshot(): LobbySnapshot {
@@ -256,6 +390,10 @@ export class HostSession implements OnlineSession, HostControls {
       mySeat: HOST_SEAT,
       isHost: true,
       connection: { kind: 'connected' },
+      policy: this.lobby.policy,
+      table: this.tableSummary(),
+      notice: null,
+      pause: this.pause,
     };
   }
 
@@ -270,7 +408,7 @@ export class HostSession implements OnlineSession, HostControls {
     if (this.closed) return;
     if (what.lobby) {
       this.lobbyVersion++;
-      for (const peer of this.seatPeer.values()) this.sendLobby(peer);
+      for (const peer of [...this.seatPeer.values(), ...this.guests]) this.sendLobby(peer);
       const snap = this.lobbySnapshot();
       for (const l of this.lobbyListeners) l(snap);
       const table = this.tableInfo();
@@ -281,18 +419,45 @@ export class HostSession implements OnlineSession, HostControls {
       const view = this.game.view(HOST_SEAT);
       for (const l of this.viewListeners) l(view);
     }
-    void this.save();
+    this.save();
   }
 
-  private async save(): Promise<void> {
-    const saved: SavedHostGame = {
-      roomCode: this.roomCode,
-      lobby: this.lobby,
-      lobbyVersion: this.lobbyVersion,
-      game: this.game?.snapshot() ?? null,
-    };
-    await this.storage.set(STORAGE_KEYS.hostedGame(this.roomCode), saved);
-    await this.storage.set(STORAGE_KEYS.currentHosted, this.roomCode);
+  /** The save for this game: full state, seat names and hashed tokens, room details. */
+  private envelope(): SaveEnvelope {
+    const seats: SavedSeat[] = this.lobby.seats.map((s) =>
+      s.kind === 'human' && s.tokenHash
+        ? { name: s.name, kind: 'human', tokenHash: s.tokenHash }
+        : { name: s.name || 'Bot', kind: 'bot', bot: { difficulty: 'heuristic' } },
+    );
+    return createEnvelope({
+      id: hostedSaveId(this.roomCode),
+      savedAt: Date.now(),
+      mode: 'online',
+      game: this.game!.snapshot(),
+      seats,
+      online: {
+        roomCode: this.roomCode,
+        roomPassword: roomPassword(this.roomCode),
+        hostName: this.lobby.seats[HOST_SEAT].name,
+        policy: this.lobby.policy,
+        lobbyVersion: this.lobbyVersion,
+      },
+    });
+  }
+
+  /** Autosave after every change once the game is under way; finished games leave the saved list. */
+  private save(): void {
+    if (!this.autosaver || !this.game) return;
+    if (this.game.phase === 'gameOver') {
+      void this.autosaver.flush().then(() => this.saves!.delete(hostedSaveId(this.roomCode)));
+      return;
+    }
+    this.autosaver.request(this.envelope());
+  }
+
+  private async saveNow(): Promise<void> {
+    this.save();
+    await this.autosaver?.flush();
   }
 
   private send(peer: PeerId, body: HostMessageBody): void {
@@ -302,7 +467,17 @@ export class HostSession implements OnlineSession, HostControls {
   }
 
   private sendLobby(peer: PeerId): void {
-    this.send(peer, { type: 'LOBBY', lobbyVersion: this.lobbyVersion, seats: this.seatsInfo(), started: this.lobby.started });
+    // reservedUntil is local to this device; the wire carries only the relative reservedMs.
+    const seats = this.seatsInfo().map(({ reservedUntil: _, ...s }) => s);
+    this.send(peer, {
+      type: 'LOBBY',
+      lobbyVersion: this.lobbyVersion,
+      seats,
+      started: this.lobby.started,
+      policy: this.lobby.policy,
+      table: this.tableSummary(),
+      pause: this.pause,
+    });
   }
 
   /** The only place game state leaves the host: one seat's redacted view, to that seat's peer. */
@@ -316,6 +491,8 @@ export class HostSession implements OnlineSession, HostControls {
     if (!p) {
       p = {
         seat: null,
+        name: null,
+        token: null,
         limiter: new RateLimiter(this.net.rateLimitPerSecond, this.net.rateLimitBurst),
         strikes: 0,
         lastSeq: 0,
@@ -365,6 +542,7 @@ export class HostSession implements OnlineSession, HostControls {
         if (p.seat === null || !this.game) {
           return this.send(from, { type: 'ACTION_RESULT', requestId: m.requestId, error: { code: 'NOT_SEATED', message: 'The game has not started' } });
         }
+        if (this.pause.paused) return this.send(from, { type: 'ACTION_RESULT', requestId: m.requestId, error: PAUSED_ERROR });
         // The seat comes from who sent the message, never from the message itself.
         const error = this.game.submit(p.seat, m.action);
         return this.send(from, { type: 'ACTION_RESULT', requestId: m.requestId, error });
@@ -373,11 +551,26 @@ export class HostSession implements OnlineSession, HostControls {
         if (p.seat !== null) {
           this.sendLobby(from);
           this.sendView(from, p.seat);
+        } else if (this.guests.has(from)) {
+          this.sendLobby(from);
         }
         return;
+      case 'PAUSE_REQUEST':
+        if (p.seat !== null && this.game && !this.pause.paused && p.seat !== HOST_SEAT) {
+          const event: TableEvent = { kind: 'pause-requested', seat: p.seat, name: this.lobby.seats[p.seat].name };
+          for (const l of this.eventListeners) l(event); // the host decides in their UI
+        }
+        return;
+      case 'TAKE_SEAT': {
+        if (p.seat !== null || !this.guests.has(from)) return;
+        const reason = this.seatNewcomer(from, p, m.seat);
+        if (reason) this.send(from, { type: 'SEAT_DENIED', reason });
+        return;
+      }
       case 'PING':
         return this.send(from, { type: 'PONG', t: m.t, stateVersion: this.game?.version ?? 0, lobbyVersion: this.lobbyVersion });
       case 'LEAVE':
+        this.guests.delete(from);
         if (p.seat !== null) this.playerLeft(p.seat);
         this.detach(from);
         return;
@@ -385,28 +578,120 @@ export class HostSession implements OnlineSession, HostControls {
   }
 
   private hello(from: PeerId, p: PeerState, name: string, token: string | null): void {
+    p.name = name;
     // Rejoining with a seat token: same seat, same hand.
     const seat = token ? seatForToken(this.lobby, token) : null;
     if (seat !== null && seat !== HOST_SEAT) {
       const old = this.seatPeer.get(seat);
       if (old && old !== from) this.detach(old);
+      this.guests.delete(from);
       this.attach(from, p, seat, token!);
       if (!this.lobby.started) this.setLobby(renameSeat(this.lobby, seat, name));
       return;
     }
-    if (p.seat !== null) return this.welcome(from, p.seat, this.lobby.seats[p.seat].token!);
-    if (this.lobby.started) {
-      return this.send(from, { type: 'REJECTED', reason: 'GAME_IN_PROGRESS', hostVersion: PROTOCOL_VERSION });
+    // Back after the host resumed a saved game without them: their seat is theirs again if a bot still has it.
+    const former = token ? formerSeatForToken(this.lobby, token) : null;
+    if (former !== null && p.seat === null) {
+      this.lobby = reclaimFormerSeat(this.lobby, former, name, token!);
+      this.bots.delete(former);
+      this.botControlled[former] = false;
+      this.lostAt[former] = null;
+      this.guests.delete(from);
+      this.attach(from, p, former, token!);
+      this.runner?.schedule();
+      this.broadcastEvent({ kind: 'returned', seat: former, name });
+      this.changed({ lobby: true });
+      return;
     }
-    const claimed = claimSeat(this.lobby, name, newToken());
-    if (!claimed) return this.send(from, { type: 'REJECTED', reason: 'ROOM_FULL', hostVersion: PROTOCOL_VERSION });
-    this.lobby = claimed.lobby;
-    this.attach(from, p, claimed.seat, claimed.lobby.seats[claimed.seat].token!);
+    if (p.seat !== null && p.token) return this.welcome(from, p.seat, p.token);
+
+    // A newcomer (or someone whose reservation ran out). They become a guest who can see the
+    // seats and the public table, and get seated now if the host's settings allow.
+    if (!this.guests.has(from)) {
+      if (this.guests.size >= this.net.maxGuests) {
+        return this.send(from, { type: 'REJECTED', reason: 'ROOM_FULL', hostVersion: PROTOCOL_VERSION });
+      }
+      this.guests.add(from);
+    }
+    this.sendLobby(from);
+    // They had a seat token, but that seat was given up while they were away: tell them why.
+    if (token !== null && this.lobby.started) this.send(from, { type: 'SEAT_DENIED', reason: 'SEAT_EXPIRED' });
+    if (this.autoSeating()) {
+      const reason = this.seatNewcomer(from, p, null);
+      if (reason) this.send(from, { type: 'SEAT_DENIED', reason });
+    }
+  }
+
+  /** Whether newcomers are seated automatically right now. Before the start they always are. */
+  private autoSeating(): boolean {
+    return !this.lobby.started || (this.lobby.policy.midGameJoins && this.lobby.policy.autoAssign);
+  }
+
+  /**
+   * Seats a guest: in a specific seat, or the first open one. Returns why not, or null on success.
+   * Messages are handled one at a time, so two guests asking for the same seat can't both get it:
+   * the first takes it, and the second finds a human there.
+   */
+  private seatNewcomer(from: PeerId, p: PeerState, wanted: Seat | null): SeatDeniedReason | null {
+    const started = this.lobby.started;
+    if (started && !this.lobby.policy.midGameJoins) return 'JOINS_DISABLED';
+    const token = newToken();
+    let lobby: Lobby | null;
+    let seat: Seat;
+    if (wanted === null) {
+      if (started) {
+        seat = openBotSeats(this.lobby)[0] ?? -1;
+        lobby = seat < 0 ? null : takeSeat(this.lobby, seat, p.name!, token);
+      } else {
+        const claimed = claimSeat(this.lobby, p.name!, token);
+        seat = claimed?.seat ?? -1;
+        lobby = claimed?.lobby ?? null;
+      }
+      if (!lobby) return 'NO_OPEN_SEATS';
+    } else {
+      seat = wanted;
+      const target = this.lobby.seats[seat];
+      if (!target) return 'NOT_OPEN';
+      if (target.kind === 'human') return seat !== HOST_SEAT && started && this.status(seat) !== 'connected' ? 'RESERVED' : 'SEAT_TAKEN';
+      lobby = takeSeat(this.lobby, seat, p.name!, token);
+      if (!lobby) return 'NOT_OPEN';
+    }
+
+    const tookBot = this.lobby.seats[seat].kind === 'bot';
+    this.lobby = lobby;
+    // The bot is out: any move it was about to make is dropped (BotRunner re-checks who controls
+    // the seat before submitting), and the human now plays the seat's current hand.
+    this.bots.delete(seat);
+    this.botControlled[seat] = false;
+    this.lostAt[seat] = null;
+    this.guests.delete(from);
+    this.attach(from, p, seat, token);
+    this.runner?.schedule();
+    if (started && tookBot) this.broadcastEvent({ kind: 'took-seat', seat, name: p.name! });
+    this.changed({ lobby: true });
+    return null;
+  }
+
+  private broadcastEvent(event: TableEvent): void {
+    for (const peer of [...this.seatPeer.values(), ...this.guests]) this.send(peer, { type: 'EVENT', event });
+    for (const l of this.eventListeners) l(event);
+  }
+
+  /** A human's seat becomes an open bot seat, and their token stops working (unless `keepClaim`). */
+  private giveUpSeat(seat: Seat, keepClaim = false): void {
+    const peer = this.seatPeer.get(seat);
+    if (peer) this.peers.get(peer)!.seat = null;
+    this.seatPeer.delete(seat);
+    this.lostAt[seat] = null;
+    this.botControlled[seat] = false;
+    this.lobby = releaseSeat(this.lobby, seat, keepClaim);
+    this.runner?.schedule();
     this.changed({ lobby: true });
   }
 
   private attach(peer: PeerId, p: PeerState, seat: Seat, token: string): void {
     p.seat = seat;
+    p.token = token;
     this.seatPeer.set(seat, peer);
     this.welcome(peer, seat, token);
     this.reconnected(seat);
@@ -429,6 +714,7 @@ export class HostSession implements OnlineSession, HostControls {
   }
 
   private onPeerLeave(peer: PeerId): void {
+    this.guests.delete(peer);
     const p = this.peers.get(peer);
     if (p?.seat != null && this.seatPeer.get(p.seat) === peer) this.lostContact(p.seat);
   }
@@ -448,16 +734,14 @@ export class HostSession implements OnlineSession, HostControls {
     this.changed({ lobby: true });
   }
 
-  /** Someone left on purpose: free their seat in the lobby, or hand it to a bot right away in game. */
+  /** Someone left on purpose: free their seat in the lobby, or make it an open bot seat in game. */
   private playerLeft(seat: Seat): void {
     if (!this.lobby.started) {
       this.seatPeer.delete(seat);
       this.lostAt[seat] = null;
       this.setLobby(freeSeat(this.lobby, seat));
     } else {
-      this.botControlled[seat] = true;
-      this.runner?.schedule();
-      this.changed({ lobby: true });
+      this.giveUpSeat(seat);
     }
   }
 
@@ -471,6 +755,8 @@ export class HostSession implements OnlineSession, HostControls {
     let changed = false;
     this.lobby.seats.forEach((s, seat) => {
       const lost = this.lostAt[seat];
+      // While paused, the takeover and reservation clocks are frozen (they restart on unpause).
+      if (this.pause.paused) return;
       if (lost === null || s.kind !== 'human' || now - lost < this.net.botTakeoverMs) return;
       if (!this.lobby.started) {
         // In the lobby, a player who's been gone this long loses their seat.
@@ -480,6 +766,9 @@ export class HostSession implements OnlineSession, HostControls {
         this.lostAt[seat] = null;
         this.lobby = freeSeat(this.lobby, seat);
         changed = true;
+      } else if (now - lost >= this.net.seatReservationMs) {
+        // The reservation ran out: the seat becomes an open bot seat a newcomer can take.
+        this.giveUpSeat(seat);
       } else if (!this.botControlled[seat]) {
         this.botControlled[seat] = true;
         changed = true;
@@ -488,6 +777,19 @@ export class HostSession implements OnlineSession, HostControls {
     if (changed) {
       this.runner?.schedule();
       this.changed({ lobby: true });
+    }
+    this.serveGuests(now);
+  }
+
+  /** Drops guests who went quiet, and seats waiting guests when a seat has opened up. */
+  private serveGuests(now: number): void {
+    for (const peer of [...this.guests]) {
+      const p = this.peers.get(peer);
+      if (!p || now - p.lastSeen > 2 * this.net.peerTimeoutMs) {
+        this.guests.delete(peer);
+        continue;
+      }
+      if (this.autoSeating()) this.seatNewcomer(peer, p, null);
     }
   }
 }

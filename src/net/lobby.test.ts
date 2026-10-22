@@ -27,7 +27,7 @@ describe('lobby', () => {
 
   it('bots can go in empty seats and be removed again', () => {
     let l = addBot(lobby(), 2);
-    expect(l.seats[2]).toMatchObject({ kind: 'bot', name: 'Bot 3', token: null });
+    expect(l.seats[2]).toMatchObject({ kind: 'bot', name: 'Bot 3', tokenHash: null });
     expect(claimSeat(l, 'A', 'tok-A')!.seat).toBe(1);
     l = freeSeat(l, 2);
     expect(l.seats[2].kind).toBe('empty');
@@ -40,7 +40,7 @@ describe('lobby', () => {
     expect(kicked.seats[1].kind).toBe('empty');
     expect(seatForToken(kicked, 'tok-A')).toBeNull();
     const inGame = kickSeat(startLobby(joined), 1);
-    expect(inGame.seats[1]).toMatchObject({ kind: 'bot', token: null });
+    expect(inGame.seats[1]).toMatchObject({ kind: 'bot', tokenHash: null });
   });
 
   it('the host cannot be kicked or removed', () => {

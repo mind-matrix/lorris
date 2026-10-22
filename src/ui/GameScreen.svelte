@@ -1,7 +1,10 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { getLegalActionsFromView, teamOf, type Action, type GameEvent, type PlayerView, type Seat } from '../core';
-  import type { GameSession, OnlineSession, TableInfo } from '../session/types';
+  import type { GameSession, HostControls, LobbySnapshot, OnlineSession, TableInfo } from '../session/types';
+  import RoomSheet from './RoomSheet.svelte';
+  import PauseOverlay from './PauseOverlay.svelte';
+  import GuestMenu from './GuestMenu.svelte';
   import ConnectionNotice from './ConnectionNotice.svelte';
   import BidPanel from './BidPanel.svelte';
   import CardView from './CardView.svelte';
@@ -11,7 +14,6 @@
   import SetSummary from './SetSummary.svelte';
   import TrumpPicker from './TrumpPicker.svelte';
   import { TEAM_NAME } from './labels';
-  import { SHARE_MESSAGES, shareInvite } from './invite';
   import { DEAL_FLIGHT_MS, DEAL_STEP_MS, ROUND_LINGER_MS, dealDurationMs } from './timing';
 
   let {
@@ -37,6 +39,32 @@
   let coverFor = $state<Seat | null>(null);
   let toast = $state<string | null>(null);
   let lastSeq = -1;
+  let roomOpen = $state(false);
+  let guestMenuOpen = $state(false);
+  /** Host only: a player asked for a pause and is waiting for an answer. */
+  let pauseRequest = $state<{ seat: Seat; name: string } | null>(null);
+  const paused = $derived(table?.pause?.paused ?? false);
+  /** Online: lobby data (join policy, reserved seats) for the host's Room sheet. */
+  let hostLobby = $state<LobbySnapshot | null>(null);
+
+  // Online: table-wide news ("Priya took over a bot seat.") and the host's room data.
+  $effect(() => {
+    const o = online;
+    if (!o) return;
+    return untrack(() => {
+      const offEvents = o.subscribeEvents((e) => {
+        if (e.kind === 'took-seat') showToast(`${e.name} took over a bot seat.`);
+        else if (e.kind === 'returned') showToast(`${e.name} is back.`);
+        else if (e.kind === 'pause-requested') pauseRequest = { seat: e.seat, name: e.name };
+        else if (e.kind === 'pause-declined') showToast('The host wants to keep playing.');
+      });
+      const offLobby = o.isHost ? o.subscribeLobby((l) => (hostLobby = l)) : () => {};
+      return () => {
+        offEvents();
+        offLobby();
+      };
+    });
+  });
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Subscribe once per session. The listeners read and write component state, so run them
@@ -107,7 +135,7 @@
   const view = $derived(views[activeSeat]);
   const legal = $derived(view ? getLegalActionsFromView(view) : []);
   const playable = $derived(
-    view?.phase === 'playing' && view.turn === activeSeat
+    view?.phase === 'playing' && view.turn === activeSeat && !(table?.pause?.paused ?? false)
       ? legal.flatMap((a) => (a.type === 'PLAY_CARD' ? [a.card] : []))
       : null,
   );
@@ -159,8 +187,10 @@
   let dealing = $state(false);
   $effect(() => {
     if (dealSeq < 0) return;
+    // Only animate a fresh deal: a resumed (or rejoined) game mid-set shows the hand straight away.
+    const fresh = untrack(() => view!.phase === 'bidding' && view!.bids.length === 0);
     const ms = untrack(() => dealDurationMs(totalCards));
-    if (ms === 0) return;
+    if (ms === 0 || !fresh) return;
     dealing = true;
     const timer = setTimeout(() => (dealing = false), ms);
     return () => clearTimeout(timer);
@@ -177,7 +207,7 @@
 
   // Prompt under the hand when it's my lead, since an empty table doesn't say "your move".
   const leadHint = $derived.by(() => {
-    if (!view || view.phase !== 'playing' || view.turn !== activeSeat || view.trick.plays.length > 0) return null;
+    if (!view || paused || view.phase !== 'playing' || view.turn !== activeSeat || view.trick.plays.length > 0) return null;
     return view.completedTricks.at(-1)?.winner === activeSeat ? 'You won that round: lead the next card' : 'Your lead: play any card';
   });
 
@@ -206,10 +236,8 @@
       {view}
       onleave={leave}
       roomCode={online?.roomCode ?? null}
-      onshare={async () => {
-        const message = SHARE_MESSAGES[await shareInvite(online!.roomCode)];
-        if (message) showToast(message);
-      }}
+      isHost={online?.isHost ?? false}
+      onshare={() => (online?.isHost ? (roomOpen = true) : (guestMenuOpen = true))}
     />
 
     <main class="table" aria-label="Table">
@@ -225,7 +253,7 @@
             bid={bidOf(seat)}
             called={view.phase !== 'bidding' && view.contract?.seat === seat ? view.contract.value : null}
             isMe={seat === activeSeat}
-            status={table?.seats[seat]?.kind === 'human' ? table.seats[seat].status : 'connected'}
+            status={table?.seats[seat]?.kind === 'human' || table?.seats[seat]?.kind === 'reserved' ? table.seats[seat].status : 'connected'}
           />
         </div>
       {/each}
@@ -275,6 +303,16 @@
         <div class="toast" role="status">{toast}</div>
       {/if}
 
+      {#if paused && table && online}
+        <PauseOverlay
+          {table}
+          {names}
+          roomCode={online.roomCode}
+          host={online.isHost ? (online as OnlineSession & HostControls) : null}
+          onmessage={showToast}
+        />
+      {/if}
+
       {#if table && table.connection.kind !== 'local' && table.connection.kind !== 'connected'}
         <ConnectionNotice
           inline
@@ -289,6 +327,8 @@
     <section class="controls" aria-live="polite">
       {#if dealing}
         <p class="status">{status}</p>
+      {:else if paused}
+        <p class="status">Paused</p>
       {:else if view.phase === 'bidding' && view.turn === activeSeat}
         <BidPanel {legal} onact={act} />
       {:else if view.phase === 'choosingTrump' && view.turn === activeSeat}
@@ -318,6 +358,51 @@
       canDeal={legal.some((a) => a.type === 'NEXT_SET')}
       ondeal={() => act({ type: 'NEXT_SET' })}
       onnewgame={onexit}
+    />
+  {/if}
+
+  {#if guestMenuOpen && online && !online.isHost}
+    <GuestMenu
+      roomCode={online.roomCode}
+      {paused}
+      onpause={() => {
+        online.requestPause?.();
+        showToast('Asked the host to pause.');
+      }}
+      onclose={() => (guestMenuOpen = false)}
+      onmessage={showToast}
+    />
+  {/if}
+
+  {#if pauseRequest && online?.isHost}
+    {@const req = pauseRequest}
+    <div class="request" role="alertdialog" aria-labelledby="req-title">
+      <p id="req-title"><b>{req.name}</b> asks to pause the game.</p>
+      <div class="row">
+        <button
+          class="btn"
+          onclick={() => {
+            (online as OnlineSession & HostControls).pauseGame(req.seat);
+            pauseRequest = null;
+          }}>Pause</button
+        >
+        <button
+          class="btn secondary"
+          onclick={() => {
+            (online as OnlineSession & HostControls).declinePause(req.seat);
+            pauseRequest = null;
+          }}>Not now</button
+        >
+      </div>
+    </div>
+  {/if}
+
+  {#if roomOpen && online?.isHost && hostLobby}
+    <RoomSheet
+      lobby={hostLobby}
+      host={online as OnlineSession & HostControls}
+      onclose={() => (roomOpen = false)}
+      onmessage={showToast}
     />
   {/if}
 
@@ -440,6 +525,27 @@
     to {
       opacity: 0;
     }
+  }
+  .request {
+    position: fixed;
+    left: 50%;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    z-index: 22;
+    width: min(calc(100% - 24px), 380px);
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: var(--panel);
+    box-shadow: 0 4px 18px rgb(0 0 0 / 0.3);
+    text-align: center;
+  }
+  .request p {
+    margin: 0 0 8px;
+  }
+  .request .row {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
   }
   .cover {
     position: fixed;

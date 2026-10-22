@@ -14,20 +14,33 @@
     onstart,
     onhost,
     onjoin,
-    resumeCode = null,
-    onresume,
-    ondiscard,
-    rejoinCode = null,
+    offlineResume = null,
+    onresumeoffline,
+    hostedResume = null,
+    onresumehosted,
+    clientResume = null,
+    onrejoinclient,
+    savedCount = 0,
+    onsavedgames,
+    message = null,
   }: {
     onstart: (setup: GameSetup) => void;
     onhost: () => void;
     onjoin: (code: string | null) => void;
-    /** A game this device was hosting when the app closed. */
-    resumeCode?: string | null;
-    onresume: () => void;
-    ondiscard: () => void;
-    /** A game this device had joined and still holds a seat in. */
-    rejoinCode?: string | null;
+    /** The newest offline game saved on this device. */
+    offlineResume?: { label: string; savedAt: number } | null;
+    onresumeoffline: () => void;
+    /** The newest online game this device hosts (saved, or autosaved before the app closed). */
+    hostedResume?: { label: string; roomCode: string } | null;
+    onresumehosted: () => void;
+    /** The newest online game this device joined and still holds a seat in. */
+    clientResume?: { hostName: string; label: string; savedByHost: boolean } | null;
+    onrejoinclient: () => void;
+    /** How many games are in the saved games list (offline, hosted, and joined). */
+    savedCount?: number;
+    onsavedgames: () => void;
+    /** A problem to show (e.g. a damaged save). */
+    message?: string | null;
   } = $props();
 
   let playerCount = $state<number>(SUPPORTED_PLAYER_COUNTS[0]);
@@ -43,19 +56,36 @@
   <h1>Lorris</h1>
   <p class="tag">The game of big promises and bigger comebacks</p>
 
-  {#if resumeCode || rejoinCode}
-    <section class="resume" aria-label="Game in progress">
-      {#if resumeCode}
-        <p>You were hosting game <b>{formatRoomCode(resumeCode)}</b>.</p>
-        <div class="row">
-          <button class="btn" onclick={onresume}>Resume hosting</button>
-          <button class="btn secondary" onclick={() => confirm('Discard this game? Players will not be able to rejoin.') && ondiscard()}>Discard</button>
-        </div>
-      {:else if rejoinCode}
-        <p>You were playing in game <b>{formatRoomCode(rejoinCode)}</b>.</p>
-        <button class="btn" onclick={() => onjoin(rejoinCode)}>Rejoin</button>
-      {/if}
+  {#if message}<p class="message" role="alert">{message}</p>{/if}
+
+  {#if offlineResume}
+    <section class="resume" aria-label="Saved game">
+      <p><b>{offlineResume.label}</b></p>
+      <p class="small">Saved {new Date(offlineResume.savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</p>
+      <button class="btn" onclick={onresumeoffline}>Resume game</button>
     </section>
+  {/if}
+
+  {#if hostedResume}
+    <section class="resume" aria-label="Online game you host">
+      <p>You're hosting game <b>{formatRoomCode(hostedResume.roomCode)}</b></p>
+      <p class="small">{hostedResume.label}</p>
+      <button class="btn" onclick={onresumehosted}>Resume hosting</button>
+    </section>
+  {/if}
+
+  {#if clientResume}
+    <section class="resume" aria-label="Online game you joined">
+      <p><b>Saved game with {clientResume.hostName}</b></p>
+      <p class="small">
+        {clientResume.label}{clientResume.savedByHost ? ` · waiting for ${clientResume.hostName} to resume` : ''}
+      </p>
+      <button class="btn" onclick={onrejoinclient}>Rejoin</button>
+    </section>
+  {/if}
+
+  {#if savedCount > 0}
+    <button class="btn secondary" onclick={onsavedgames}>Saved games ({savedCount})</button>
   {/if}
 
   <h2>Play online</h2>
@@ -127,6 +157,18 @@
   }
   .resume p {
     margin: 0 0 8px;
+  }
+  .resume .small {
+    margin-top: -6px;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .message {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--bad);
   }
   .tag {
     margin: 0;

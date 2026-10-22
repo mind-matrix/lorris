@@ -1,10 +1,12 @@
-import type { Action, GameConfig, PlayerView, Seat } from '../core';
+import type { Action, GameConfig, GameState, PlayerView, Seat } from '../core';
 import type { Bot } from '../ai';
 import { BotRunner, DEFAULT_PACING, type BotPacing } from './BotRunner';
 import { GameHost } from './GameHost';
 import type { GameSession, SessionError, TableInfo } from './types';
 
 export { DEFAULT_PACING, type BotPacing };
+
+export type LocalStart = { config: GameConfig; seed: number } | { snapshot: { state: GameState; version: number } };
 
 /**
  * Offline play: an in-process host, bots for some seats, and humans for the rest.
@@ -17,14 +19,13 @@ export class LocalSession implements GameSession {
   private table: TableInfo;
 
   constructor(
-    config: GameConfig,
-    seed: number,
+    start: LocalStart,
     bots: (Bot | null)[],
-    names: string[],
+    readonly names: string[],
     pacing: BotPacing = DEFAULT_PACING,
   ) {
-    if (bots.length !== config.playerCount) throw new Error('Need one entry (bot or null for human) per seat');
-    this.host = new GameHost(config, seed);
+    this.host = 'snapshot' in start ? new GameHost(start.snapshot) : new GameHost(start.config, start.seed);
+    if (bots.length !== this.host.config.playerCount) throw new Error('Need one entry (bot or null for human) per seat');
     this.seats = bots.flatMap((b, seat) => (b ? [] : [seat]));
     this.table = {
       seats: bots.map((b, seat) => ({ kind: b ? 'bot' : 'human', name: names[seat], status: 'connected' })),
@@ -32,6 +33,21 @@ export class LocalSession implements GameSession {
     };
     this.runner = new BotRunner(this.host, (seat) => bots[seat], pacing);
     this.runner.schedule();
+  }
+
+  /** Which seats are bots (for saving). */
+  get botSeats(): boolean[] {
+    return this.table.seats.map((s) => s.kind === 'bot');
+  }
+
+  /** The full state, for saving. */
+  snapshot(): { state: GameState; version: number } {
+    return this.host.snapshot();
+  }
+
+  /** Called after every accepted action. */
+  onChange(listener: () => void): () => void {
+    return this.host.onChange(listener);
   }
 
   subscribe(seat: Seat, listener: (view: PlayerView) => void): () => void {

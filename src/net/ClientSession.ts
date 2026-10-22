@@ -2,10 +2,23 @@
 // Never holds more than its own player view. Everything from the network is validated first.
 
 import { getLegalActionsFromView, type Action, type PlayerView, type Seat } from '../core';
-import { STORAGE_KEYS, type KeyValueStore } from '../session/storage';
+import { STORAGE_KEYS, type ClientGameRef, type KeyValueStore } from '../session/storage';
 import type { ConnectionState, LobbySnapshot, OnlineSession, SessionError, TableInfo } from '../session/types';
 import { NET_CONFIG, type NetConfig } from './config';
-import { Outbox, PROTOCOL_VERSION, type ClientMessageBody, type HostMessage, type RejectReason, type SeatInfo } from './protocol';
+import { DEFAULT_POLICY } from './lobby';
+import {
+  Outbox,
+  PROTOCOL_VERSION,
+  type ClientMessageBody,
+  type HostMessage,
+  type JoinPolicy,
+  type PauseState,
+  type RejectReason,
+  type SeatDeniedReason,
+  type SeatInfo,
+  type TableEvent,
+  type TableSummary,
+} from './protocol';
 import { roomPassword } from './roomCode';
 import type { PeerId, Transport } from './transport';
 import { parseHostMessage, versionOf } from './validate';
@@ -16,6 +29,11 @@ export interface ClientOptions {
   roomCode: string;
   name: string;
   net?: NetConfig;
+  /**
+   * Rejoining a game the host saved: if they haven't reopened it yet, wait for them (showing
+   * "waiting for <hostName> to resume") instead of giving up after the join timeout.
+   */
+  waitForHost?: string;
 }
 
 interface SavedSeat {
@@ -29,6 +47,15 @@ const MESSAGES = {
     "Couldn't connect to the other players. Your network may be blocking the connection. Try switching between Wi-Fi and mobile data, then try again.",
   offline: "You're offline. Connect to the internet and try again.",
   ended: 'The host ended the game.',
+};
+
+const DENIED_MESSAGES: Record<SeatDeniedReason, string> = {
+  SEAT_TAKEN: 'Someone else just took that seat. Pick another one.',
+  RESERVED: 'That seat is being kept for a player who lost their connection.',
+  NOT_OPEN: "That seat isn't available.",
+  JOINS_DISABLED: "The host isn't letting new players join right now.",
+  NO_OPEN_SEATS: 'This game is full. You can wait for the next game or ask the host.',
+  SEAT_EXPIRED: 'Your old seat was given up after you were away. Pick a seat to keep playing.',
 };
 
 const REJECT_MESSAGES: Record<RejectReason, string> = {
@@ -56,6 +83,12 @@ export class ClientSession implements OnlineSession {
   private lobbyVersion = 0;
   private seatInfo: SeatInfo[] = [];
   private started = false;
+  private policy: JoinPolicy = { ...DEFAULT_POLICY };
+  private table: TableSummary | null = null;
+  private notice: string | null = null;
+  private pause: PauseState = { paused: false, by: null, resuming: false };
+  private waitForHost: string | null;
+  private eventListeners = new Set<(e: TableEvent) => void>();
   private connection: ConnectionState = { kind: 'connecting' };
   private welcomed = false;
   private networkTrouble = false;
@@ -82,6 +115,7 @@ export class ClientSession implements OnlineSession {
     this.roomCode = opts.roomCode;
     this.name = opts.name;
     this.net = opts.net ?? NET_CONFIG;
+    this.waitForHost = opts.waitForHost ?? null;
   }
 
   get seats(): Seat[] {
@@ -118,6 +152,24 @@ export class ClientSession implements OnlineSession {
     this.tableListeners.add(listener);
     listener(this.tableInfo());
     return () => this.tableListeners.delete(listener);
+  }
+
+  subscribeEvents(listener: (e: TableEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
+  /** Ask the host to pause. They decide; if they say no we hear 'pause-declined'. */
+  requestPause(): void {
+    if (this.hostPeer && this.mySeat !== null && !this.pause.paused) this.sendTo(this.hostPeer, { type: 'PAUSE_REQUEST' });
+  }
+
+  /** Ask for a seat in a game in progress (null = any open seat). The answer is WELCOME or SEAT_DENIED. */
+  takeSeat(seat: Seat | null): void {
+    if (!this.hostPeer || this.mySeat !== null) return;
+    this.notice = null;
+    this.sendTo(this.hostPeer, { type: 'TAKE_SEAT', seat });
+    this.notify({ lobby: true });
   }
 
   subscribeLobby(listener: (l: LobbySnapshot) => void): () => void {
@@ -175,7 +227,7 @@ export class ClientSession implements OnlineSession {
 
   leave(): void {
     if (this.hostPeer) this.sendTo(this.hostPeer, { type: 'LEAVE' });
-    void this.storage.delete(STORAGE_KEYS.seat(this.roomCode));
+    void this.forgetGame();
     setTimeout(() => this.close(), 300);
   }
 
@@ -231,9 +283,25 @@ export class ClientSession implements OnlineSession {
     const parsed = parseHostMessage(raw);
     if (!parsed.ok) return;
     const m = parsed.message;
-    if (!fromHost && m.type !== 'WELCOME' && !(m.type === 'REJECTED' && !this.welcomed)) return;
-    if (fromHost || m.type === 'WELCOME') this.lastHostSeen = Date.now();
+    if (!fromHost) {
+      // Before we know the host (or after losing it), the first WELCOME or LOBBY tells us who it is.
+      const looking = this.hostPeer === null || this.lostAt !== null;
+      if (!looking) return;
+      if (m.type === 'REJECTED' && !this.welcomed) return this.handle(from, m);
+      if (m.type !== 'WELCOME' && m.type !== 'LOBBY') return;
+      this.adoptHost(from);
+    }
+    this.lastHostSeen = Date.now();
     this.handle(from, m);
+  }
+
+  private adoptHost(peer: PeerId): void {
+    this.hostPeer = peer;
+    // A host that resumed from its save may be a step behind what we last saw; take its word.
+    this.stateVersion = 0;
+    this.lobbyVersion = 0;
+    this.lostAt = null;
+    this.setConnection({ kind: 'connected' });
   }
 
   private handle(from: PeerId, m: HostMessage): void {
@@ -244,28 +312,47 @@ export class ClientSession implements OnlineSession {
         this.mySeat = m.seat;
         this.token = m.token;
         this.welcomed = true;
-        // A host that resumed from its save may be a step behind what we last saw; take its word.
-        this.stateVersion = 0;
-        this.lobbyVersion = 0;
-        this.lostAt = null;
+        this.notice = null;
         void this.storage.set(STORAGE_KEYS.seat(this.roomCode), { token: m.token, seat: m.seat } satisfies SavedSeat);
         this.setConnection({ kind: 'connected' });
         return;
       case 'REJECTED':
         if (m.reason === 'VERSION_MISMATCH') return this.versionMismatch(m.hostVersion);
-        if (m.reason === 'KICKED') void this.storage.delete(STORAGE_KEYS.seat(this.roomCode));
+        if (m.reason === 'KICKED') void this.forgetGame();
         this.setConnection({ kind: 'rejected', message: REJECT_MESSAGES[m.reason], needsUpdate: false });
         return this.stop();
-      case 'LOBBY':
+      case 'LOBBY': {
         if (m.lobbyVersion <= this.lobbyVersion) return;
         this.lobbyVersion = m.lobbyVersion;
-        this.seatInfo = m.seats;
+        const now = Date.now();
+        this.seatInfo = m.seats.map((seat) => (seat.reservedMs === undefined ? seat : { ...seat, reservedUntil: now + seat.reservedMs }));
         this.started = m.started;
+        this.policy = m.policy;
+        this.table = m.table;
+        this.pause = m.pause;
+        if (this.welcomed && m.started && this.table?.phase !== 'gameOver') this.rememberGame(false);
         return this.notify({ lobby: true });
+      }
+      case 'SEAT_DENIED':
+        if (m.reason === 'SEAT_EXPIRED') {
+          // Our seat is gone; we're a newcomer again and can pick a seat (or be auto-seated).
+          this.token = null;
+          this.mySeat = null;
+          this.welcomed = false;
+          this.view = null;
+          this.stateVersion = 0;
+          void this.storage.delete(STORAGE_KEYS.seat(this.roomCode));
+        }
+        this.notice = DENIED_MESSAGES[m.reason];
+        return this.notify({ lobby: true });
+      case 'EVENT':
+        for (const l of this.eventListeners) l(m.event);
+        return;
       case 'VIEW':
         if (m.stateVersion <= this.stateVersion || m.view.seat !== this.mySeat) return; // stale, or not ours
         this.stateVersion = m.stateVersion;
         this.view = m.view;
+        if (m.view.phase === 'gameOver') void this.storage.delete(STORAGE_KEYS.clientRef(this.roomCode)); // finished games aren't kept
         return this.notify({ view: true });
       case 'ACTION_RESULT': {
         const p = this.pending.get(m.requestId);
@@ -285,12 +372,40 @@ export class ClientSession implements OnlineSession {
       }
       case 'HOST_STATUS':
         if (m.status === 'ended') {
-          void this.storage.delete(STORAGE_KEYS.seat(this.roomCode));
+          void this.forgetGame();
           this.setConnection({ kind: 'ended', message: m.message || MESSAGES.ended });
+          this.stop();
+        } else if (m.status === 'saved') {
+          // Keep our seat token and a reference, so we can rejoin when the host resumes.
+          this.rememberGame(true, m.label);
+          this.setConnection({ kind: 'ended', message: m.message });
           this.stop();
         }
         return;
     }
+  }
+
+  /** Our seat token and game reference are no longer useful: the game ended, or we left or were removed. */
+  private async forgetGame(): Promise<void> {
+    await this.storage.delete(STORAGE_KEYS.seat(this.roomCode));
+    await this.storage.delete(STORAGE_KEYS.clientRef(this.roomCode));
+  }
+
+  /** Keeps a small reference to this game (names and score only) for the start screen. */
+  private rememberGame(savedByHost: boolean, label?: string): void {
+    if (this.mySeat === null || !this.started) return;
+    const t = this.table;
+    const humans = this.seatInfo.filter((s) => s.kind === 'human' || s.kind === 'reserved').map((s) => s.name);
+    const bots = this.seatInfo.length - humans.length;
+    const fallback = `${humans.join(', ')}${bots ? ` + ${bots} bot${bots > 1 ? 's' : ''}` : ''}${t ? ` · ${t.scores[0]}–${t.scores[1]} · Set ${t.setNumber}` : ''}`;
+    const ref: ClientGameRef = {
+      roomCode: this.roomCode,
+      hostName: this.seatInfo[0]?.name || 'the host',
+      label: label ?? fallback,
+      savedAt: Date.now(),
+      savedByHost,
+    };
+    void this.storage.set(STORAGE_KEYS.clientRef(this.roomCode), ref);
   }
 
   private versionMismatch(hostVersion: number): void {
@@ -303,7 +418,7 @@ export class ClientSession implements OnlineSession {
   }
 
   private lostHost(): void {
-    if (this.lostAt !== null || !this.welcomed) return;
+    if (this.lostAt !== null || !this.hostPeer) return;
     this.lostAt = Date.now();
     this.waitDeadline = this.lostAt + this.net.hostWaitMs;
     this.setConnection({ kind: 'reconnecting' });
@@ -312,8 +427,14 @@ export class ClientSession implements OnlineSession {
   private tick(): void {
     if (this.stopped) return;
     const now = Date.now();
-    if (!this.welcomed) {
+    if (!this.hostPeer) {
       // Still looking for the room: keep knocking, but don't leave anyone on a spinner forever.
+      if (this.waitForHost !== null) {
+        // A saved game the host hasn't reopened yet: keep knocking until they do.
+        if (this.connection.kind !== 'waiting-to-resume') this.setConnection({ kind: 'waiting-to-resume', hostName: this.waitForHost });
+        this.transport.broadcast(this.outbox.wrap(this.helloBody()));
+        return;
+      }
       if (now - this.joinStartedAt > this.net.joinTimeoutMs) {
         return this.networkTrouble ? this.fail(MESSAGES.blocked) : this.fail(MESSAGES.notFound, false);
       }
@@ -322,7 +443,8 @@ export class ClientSession implements OnlineSession {
     }
     if (now - this.lastHostSeen > this.net.peerTimeoutMs) this.lostHost();
     if (this.lostAt === null) {
-      this.sendTo(this.hostPeer!, { type: 'PING', t: now });
+      // Seated or still choosing a seat: either way, keep the host aware we're here.
+      this.sendTo(this.hostPeer, { type: 'PING', t: now });
       return;
     }
     // Lost the host: knock with our token. A host that comes back (even as a new peer) will seat us again.
@@ -340,7 +462,7 @@ export class ClientSession implements OnlineSession {
   }
 
   private tableInfo(): TableInfo {
-    return { seats: this.seatInfo, connection: this.connection };
+    return { seats: this.seatInfo, connection: this.connection, pause: this.pause };
   }
 
   private lobbySnapshot(): LobbySnapshot {
@@ -351,6 +473,10 @@ export class ClientSession implements OnlineSession {
       mySeat: this.mySeat,
       isHost: false,
       connection: this.connection,
+      policy: this.policy,
+      table: this.table,
+      notice: this.notice,
+      pause: this.pause,
     };
   }
 

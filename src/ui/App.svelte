@@ -3,27 +3,44 @@
   import { makeConfig } from '../core';
   import { HeuristicBot, type Bot } from '../ai';
   import { roomCodeFromHash } from '../net/roomCode';
-  import type { SavedHostGame } from '../net/HostSession';
   import { DEFAULT_PACING, LocalSession } from '../session/LocalSession';
-  import { forgetHostedGame, lastJoinedRoom, savedHostedGame } from '../session/savedGames';
+  import { loadName } from '../session/profile';
+  import { clientRefs, forgetClientRef, migrateLegacyHostedGames } from '../session/savedGames';
+  import type { ClientGameRef } from '../session/storage';
   import type { GameSession, OnlineSession } from '../session/types';
+  import { saveStore } from '../save/appStore';
+  import { newSaveId } from '../save/envelope';
+  import { autosaveOffline, restoreOffline } from '../save/offline';
+  import { SaveLimitError, type SaveIndexEntry } from '../save/SaveStore';
+  import { SAVE_FILE_TYPE, parseSaveFile, saveFileContents, saveFileName } from '../save/transfer';
   import GameScreen from './GameScreen.svelte';
   import LobbyScreen from './LobbyScreen.svelte';
   import OnlineSetup from './OnlineSetup.svelte';
+  import SavedGamesScreen from './SavedGamesScreen.svelte';
+  import SavesFullDialog from './SavesFullDialog.svelte';
   import StartScreen, { type GameSetup } from './StartScreen.svelte';
   import { dealDurationMs } from './timing';
 
   type Screen =
     | { kind: 'menu' }
+    | { kind: 'saves' }
     | { kind: 'setup'; mode: 'host' | 'join'; code: string | null }
     | { kind: 'lobby'; session: OnlineSession }
-    | { kind: 'game'; session: GameSession; online: OnlineSession | null };
+    | { kind: 'game'; session: GameSession; online: OnlineSession | null; stopSaving?: () => void };
 
   let screen = $state<Screen>({ kind: 'menu' });
   let busy = $state(false);
   let setupError = $state<string | null>(null);
-  let resumable = $state<SavedHostGame | null>(null);
-  let rejoinCode = $state<string | null>(null);
+  let menuMessage = $state<string | null>(null);
+  let savesMessage = $state<string | null>(null);
+
+  /** Saved games on this device (offline and hosted), newest first; and joined-game references. */
+  let saves = $state<SaveIndexEntry[]>([]);
+  let refs = $state<ClientGameRef[]>([]);
+  const offlineResume = $derived(saves.find((s) => s.role === 'offline') ?? null);
+  const hostedResume = $derived(saves.find((s) => s.role === 'host') ?? null);
+  /** Starting a game while the saved games list is full: ask what to do. */
+  let fullFor = $state<GameSetup | null>(null);
 
   // Online code (and Trystero) loads only when someone actually goes online.
   const online = () => import('../net/online');
@@ -41,7 +58,7 @@
       history.replaceState(null, '', location.pathname + location.search);
       screen = { kind: 'setup', mode: 'join', code };
     }
-    void refreshResumable();
+    void migrateLegacyHostedGames().then(refresh);
 
     // Phones pause background tabs. When we're visible (or online) again, check the connection.
     const wake = () => {
@@ -57,20 +74,53 @@
     };
   });
 
-  async function refreshResumable() {
-    resumable = await savedHostedGame();
-    rejoinCode = resumable ? null : await lastJoinedRoom();
+  // If a client loses its seat mid-game (it was given up while they were away), go back to
+  // the seat picker so they can take an open seat.
+  $effect(() => {
+    if (screen.kind !== 'game' || !screen.online || screen.online.isHost) return;
+    const online = screen.online;
+    return online.subscribeLobby((l) => {
+      if (l.started && l.mySeat === null && l.connection.kind === 'connected') screen = { kind: 'lobby', session: online };
+    });
+  });
+
+  async function refresh() {
+    saves = await saveStore.list();
+    refs = await clientRefs();
   }
 
-  function startLocal({ playerCount, botCount }: GameSetup) {
+  // ---------- Offline games ----------
+
+  async function startLocal(setup: GameSetup) {
+    if (await saveStore.canCreate()) return beginLocal(setup, true);
+    saves = await saveStore.list();
+    fullFor = setup;
+  }
+
+  function beginLocal({ playerCount, botCount }: GameSetup, withSaving: boolean) {
+    fullFor = null;
     const humans = playerCount - botCount;
     // Humans take the first seats, so a lone human sits at seat 0; bots fill the rest.
     const bots: (Bot | null)[] = Array.from({ length: playerCount }, (_, seat) => (seat < humans ? null : new HeuristicBot()));
     const names = bots.map((bot, seat) => (bot ? `Bot ${seat + 1}` : humans === 1 ? 'You' : `Player ${seat + 1}`));
     const seed = crypto.getRandomValues(new Uint32Array(1))[0];
-    const session = new LocalSession(makeConfig(playerCount), seed, bots, names, pacingFor(playerCount));
-    screen = { kind: 'game', session, online: null };
+    const session = new LocalSession({ config: makeConfig(playerCount), seed }, bots, names, pacingFor(playerCount));
+    // Autosave after every move, so closing the app (or a crash) loses nothing.
+    const stopSaving = withSaving ? autosaveOffline(saveStore, newSaveId(), session).stop : undefined;
+    screen = { kind: 'game', session, online: null, stopSaving };
   }
+
+  /** Returns an error message to show, or null once the game is open. */
+  async function resumeOffline(id: string): Promise<string | null> {
+    const loaded = await saveStore.load(id);
+    if (!loaded.ok) return loaded.error.message;
+    const session = restoreOffline(loaded.save, pacingFor(loaded.save.game.state.config.playerCount));
+    const { stop } = autosaveOffline(saveStore, id, session);
+    screen = { kind: 'game', session, online: null, stopSaving: stop };
+    return null;
+  }
+
+  // ---------- Online games ----------
 
   async function withBusy(fn: () => Promise<void>) {
     busy = true;
@@ -79,6 +129,7 @@
       await fn();
     } catch {
       setupError = "Couldn't start online play. Check your connection and try again.";
+      menuMessage = setupError;
     } finally {
       busy = false;
     }
@@ -96,27 +147,86 @@
       screen = { kind: 'lobby', session };
     });
 
-  const resume = () =>
-    withBusy(async () => {
-      // A plain copy: the session must not hold on to reactive UI state.
-      const saved = $state.snapshot(resumable!) as SavedHostGame;
-      const session = await (await online()).resumeHosting(saved, pacingFor(saved.lobby.config.playerCount));
+  /** Reopens a saved hosted game: same room, paused until the host continues. */
+  async function resumeHosted(id: string): Promise<string | null> {
+    const loaded = await saveStore.load(id);
+    if (!loaded.ok) return loaded.error.message;
+    if (loaded.save.mode !== 'online') return resumeOffline(id);
+    await withBusy(async () => {
+      const session = await (await online()).resumeHosting(loaded.save, pacingFor(loaded.save.game.state.config.playerCount));
       screen = { kind: 'lobby', session };
     });
+    return null;
+  }
+
+  /** Rejoins a game we're seated in; if the host hasn't reopened it yet, we wait for them. */
+  const rejoin = (ref: ClientGameRef) =>
+    withBusy(async () => {
+      const name = (await loadName()) || 'Player';
+      const session = await (await online()).joinGame({ roomCode: ref.roomCode, name, waitForHost: ref.hostName });
+      screen = { kind: 'lobby', session };
+    });
+
+  // ---------- Saved games list, export, import ----------
+
+  async function exportSave(entry: SaveIndexEntry) {
+    const warning =
+      entry.mode === 'online'
+        ? "This file contains every player's cards and the room password. Keep it to yourself (it's for moving the game to another device). Export?"
+        : 'This file contains every hand in the game. Export it to move the game to another device?';
+    if (!confirm(warning)) return;
+    const loaded = await saveStore.load(entry.id);
+    if (!loaded.ok) return (savesMessage = loaded.error.message);
+    const name = saveFileName(loaded.save);
+    const file = new File([saveFileContents(loaded.save)], name, { type: SAVE_FILE_TYPE });
+    try {
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Lorris saved game' });
+        return;
+      }
+    } catch (e) {
+      if ((e as DOMException)?.name === 'AbortError') return;
+    }
+    const url = URL.createObjectURL(file);
+    const a = Object.assign(document.createElement('a'), { href: url, download: name });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    savesMessage = `Saved as ${name}.`;
+  }
+
+  async function importSave(file: File) {
+    const loaded = parseSaveFile(await file.text());
+    if (!loaded.ok) return (savesMessage = loaded.error.message);
+    const save = loaded.save;
+    if ((await saveStore.has(save.id)) && !confirm('This game is already saved here. Replace it with the imported copy?')) return;
+    try {
+      await saveStore.save(save, save.mode === 'offline' ? 'offline' : 'host');
+      savesMessage = `Imported "${save.label.text}".`;
+    } catch (e) {
+      savesMessage = e instanceof SaveLimitError ? e.message : "Couldn't import that game.";
+    }
+    await refresh();
+  }
+
+  // ---------- Leaving ----------
 
   function toMenu() {
     if (screen.kind === 'lobby') screen.session.close();
     if (screen.kind === 'game') screen.session.close();
     screen = { kind: 'menu' };
-    void refreshResumable();
+    void refresh();
   }
 
   /** Leaving an online game tells the others (the host ends it for everyone). */
   function leaveGame() {
     if (screen.kind === 'game' && screen.online) screen.online.leave();
-    else if (screen.kind === 'game') screen.session.close();
+    else if (screen.kind === 'game') {
+      // Offline games stay saved; they can be resumed from the start screen.
+      screen.stopSaving?.();
+      screen.session.close();
+    }
     screen = { kind: 'menu' };
-    void refreshResumable();
+    setTimeout(() => void refresh(), 400);
   }
 </script>
 
@@ -125,7 +235,13 @@
     <GameScreen
       session={screen.session}
       onexit={leaveGame}
-      leaveQuestion={screen.online ? (screen.online.isHost ? 'End the game for everyone?' : 'Leave? A bot will take your seat.') : 'Leave this game?'}
+      leaveQuestion={screen.online
+        ? screen.online.isHost
+          ? 'End the game for everyone? (To keep it, pause and choose "Save and close room".)'
+          : 'Leave? A bot will take your seat.'
+        : screen.stopSaving
+          ? 'Leave this game? It is saved, so you can resume it later.'
+          : 'Leave this game? It is not saved.'}
       online={screen.online}
     />
   {/key}
@@ -144,19 +260,55 @@
     onback={() => (screen = { kind: 'menu' })}
   />
   {#if setupError}<p class="setup-error" role="alert">{setupError}</p>{/if}
+{:else if screen.kind === 'saves'}
+  <SavedGamesScreen
+    {saves}
+    {refs}
+    {busy}
+    message={savesMessage}
+    onresume={async (e) => (savesMessage = e.role === 'offline' ? await resumeOffline(e.id) : await resumeHosted(e.id))}
+    onrejoin={rejoin}
+    ondelete={async (id) => {
+      await saveStore.delete(id);
+      await refresh();
+    }}
+    ondeleteref={async (code) => {
+      await forgetClientRef(code);
+      await refresh();
+    }}
+    onexport={exportSave}
+    onimport={importSave}
+    onback={() => {
+      savesMessage = null;
+      screen = { kind: 'menu' };
+    }}
+  />
 {:else}
   <StartScreen
     onstart={startLocal}
     onhost={() => (screen = { kind: 'setup', mode: 'host', code: null })}
     onjoin={(code) => (screen = { kind: 'setup', mode: 'join', code })}
-    resumeCode={resumable?.roomCode ?? null}
-    onresume={resume}
-    ondiscard={async () => {
-      await forgetHostedGame(resumable!.roomCode);
-      void refreshResumable();
-    }}
-    {rejoinCode}
+    offlineResume={offlineResume ? { label: offlineResume.label.text, savedAt: offlineResume.savedAt } : null}
+    onresumeoffline={async () => (menuMessage = await resumeOffline(offlineResume!.id))}
+    hostedResume={hostedResume ? { label: hostedResume.label.text, roomCode: hostedResume.id.replace(/^room-/, '') } : null}
+    onresumehosted={async () => (menuMessage = await resumeHosted(hostedResume!.id))}
+    clientResume={refs[0] ? { hostName: refs[0].hostName, label: refs[0].label, savedByHost: refs[0].savedByHost } : null}
+    onrejoinclient={() => rejoin(refs[0])}
+    savedCount={saves.length + refs.length}
+    onsavedgames={() => (screen = { kind: 'saves' })}
+    message={menuMessage}
   />
+  {#if fullFor}
+    <SavesFullDialog
+      {saves}
+      ondelete={async (id) => {
+        await saveStore.delete(id);
+        saves = await saveStore.list();
+      }}
+      onstart={(withSaving) => beginLocal(fullFor!, withSaving)}
+      oncancel={() => (fullFor = null)}
+    />
+  {/if}
 {/if}
 
 <style>

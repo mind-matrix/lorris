@@ -21,6 +21,9 @@ describe('client message validation', () => {
       { type: 'RESYNC' },
       { type: 'PING', t: 123 },
       { type: 'LEAVE' },
+      { type: 'TAKE_SEAT', seat: 2 },
+      { type: 'TAKE_SEAT', seat: null },
+      { type: 'PAUSE_REQUEST' },
     ]) {
       expect(parseClientMessage(msg(body)).ok, JSON.stringify(body)).toBe(true);
     }
@@ -37,6 +40,8 @@ describe('client message validation', () => {
     expect(reject(msg({ type: 'ACTION', requestId: -1, action: { type: 'PASS' } }))).toBe('bad action');
     expect(reject(msg({ type: 'ACTION', requestId: 1, action: { type: 'CLAIM' } }))).toBe('bad action');
     expect(reject(msg({ type: 'PING', t: 'now' }))).toBe('bad ping');
+    expect(reject(msg({ type: 'TAKE_SEAT', seat: 'any' }))).toBe('bad seat');
+    expect(reject(msg({ type: 'TAKE_SEAT', seat: 99 }))).toBe('bad seat');
     expect(reject({ v: PROTOCOL_VERSION, type: 'PING', t: 1 })).toBe('bad seq');
   });
 
@@ -83,7 +88,28 @@ describe('host message validation', () => {
 
   it('accepts a real view and a real lobby', () => {
     expect(parseHostMessage(msg({ type: 'VIEW', stateVersion: 3, view })).ok).toBe(true);
-    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 2, seats, started: false })).ok).toBe(true);
+    const policy = { midGameJoins: true, autoAssign: true };
+    const pause = { paused: false, by: null, resuming: false };
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 2, seats, started: false, policy, table: null, pause })).ok).toBe(true);
+    const table = { setNumber: 2, phase: 'playing', scores: [5, -8], tricksWon: [1, 2], trump: 'H', contract: { seat: 1, value: 5 }, handCounts: [5, 5, 6, 6], turn: 2 };
+    const reserved = [...seats.slice(0, 3), { kind: 'reserved', name: 'Ben', status: 'bot-controlled', reservedMs: 90_000 }];
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats: reserved, started: true, policy, table, pause })).ok).toBe(true);
+    // A table summary with anything card-like or out of range is refused.
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy, table: { ...table, handCounts: [5, 5] }, pause })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy: { midGameJoins: 'yes' }, table, pause })).ok).toBe(false);
+  });
+
+  it('accepts seat denials and events, and only known reasons and kinds', () => {
+    expect(parseHostMessage(msg({ type: 'SEAT_DENIED', reason: 'SEAT_TAKEN' })).ok).toBe(true);
+    expect(parseHostMessage(msg({ type: 'SEAT_DENIED', reason: 'NOPE' })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'EVENT', event: { kind: 'took-seat', seat: 2, name: 'Priya' } })).ok).toBe(true);
+    expect(parseHostMessage(msg({ type: 'EVENT', event: { kind: 'took-seat', seat: 2, name: '' } })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'EVENT', event: { kind: 'say', text: 'hi' } })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'EVENT', event: { kind: 'pause-declined' } })).ok).toBe(true);
+    // Host-local events can't arrive over the network.
+    expect(parseHostMessage(msg({ type: 'EVENT', event: { kind: 'pause-requested', seat: 1, name: 'Ben' } })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'HOST_STATUS', status: 'saved', message: 'Game saved.', label: 'Asha, Ben · 3–1 · Set 2' })).ok).toBe(true);
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy: { midGameJoins: true, autoAssign: true }, table: null, pause: { paused: 'yes' } })).ok).toBe(false);
   });
 
   it('rejects views that would break the client', () => {
@@ -96,7 +122,7 @@ describe('host message validation', () => {
     ]) {
       expect(parseHostMessage(msg({ type: 'VIEW', stateVersion: 3, view: bad })).ok).toBe(false);
     }
-    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 1, started: false, seats: [{ kind: 'alien', name: 'x', status: 'connected' }] })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 1, started: false, policy: { midGameJoins: true, autoAssign: true }, table: null, seats: [{ kind: 'alien', name: 'x', status: 'connected' }] })).ok).toBe(false);
   });
 
   it('accepts a rejection and validates its reason', () => {

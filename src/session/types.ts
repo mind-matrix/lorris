@@ -1,5 +1,5 @@
 import type { Action, PlayerView, Seat } from '../core';
-import type { SeatInfo } from '../net/protocol';
+import type { JoinPolicy, PauseState, SeatInfo, TableEvent, TableSummary } from '../net/protocol';
 
 /** Connection state of this device, shown in the UI. Local games are always 'local'. */
 export type ConnectionState =
@@ -12,6 +12,8 @@ export type ConnectionState =
   | { kind: 'waiting-for-host'; deadline: number }
   /** The wait ran out; the player can keep waiting or leave. */
   | { kind: 'host-timeout' }
+  /** Rejoining a saved game: the host hasn't reopened it yet. We keep trying until they do. */
+  | { kind: 'waiting-to-resume'; hostName: string }
   /** Couldn't connect at all. `message` is friendly, jargon-free text. */
   | { kind: 'failed'; message: string; canRetry: boolean }
   /** The host refused us (full, kicked, outdated app...). */
@@ -22,6 +24,8 @@ export type ConnectionState =
 export interface TableInfo {
   seats: SeatInfo[];
   connection: ConnectionState;
+  /** Online games: whether play is paused (or the host is reopening a saved game). */
+  pause?: PauseState;
 }
 
 export interface SessionError {
@@ -52,6 +56,12 @@ export interface LobbySnapshot {
   mySeat: Seat | null;
   isHost: boolean;
   connection: ConnectionState;
+  policy: JoinPolicy;
+  /** Public summary of a game in progress (scores, set, call); null before the start. */
+  table: TableSummary | null;
+  /** A short message for a newcomer choosing a seat (seat taken, seat expired...). */
+  notice: string | null;
+  pause: PauseState;
 }
 
 /** A game played over the network, as host or client. */
@@ -67,6 +77,12 @@ export interface OnlineSession extends GameSession {
   retry?(): void;
   /** Client only: wait another full period for a missing host. */
   keepWaiting?(): void;
+  /** Client only: take a seat in a game in progress (null = any open seat). */
+  takeSeat?(seat: Seat | null): void;
+  /** Client only: ask the host to pause. */
+  requestPause?(): void;
+  /** Table-wide happenings, like someone taking over a bot seat. */
+  subscribeEvents(listener: (event: TableEvent) => void): () => void;
 }
 
 /** Extra controls only the host has. */
@@ -75,4 +91,13 @@ export interface HostControls {
   freeSeat(seat: Seat): void;
   kick(seat: Seat): void;
   start(): void;
+  setPolicy(policy: Partial<JoinPolicy>): void;
+  /** Gives up a disconnected player's reservation now: their seat becomes an open bot seat. */
+  releaseSeat(seat: Seat): void;
+  pauseGame(by?: Seat): void;
+  unpauseGame(): void;
+  declinePause(seat: Seat): void;
+  /** After reopening a saved game: carry on, with bots in any seats whose players haven't returned. */
+  continueResumed(): void;
+  saveAndClose(): Promise<void>;
 }

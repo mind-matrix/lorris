@@ -3,7 +3,9 @@
   import { formatRoomCode, inviteLink } from '../net/roomCode';
   import type { HostControls, LobbySnapshot, OnlineSession } from '../session/types';
   import ConnectionNotice from './ConnectionNotice.svelte';
+  import JoinSettings from './JoinSettings.svelte';
   import QrCode from './QrCode.svelte';
+  import SeatPicker from './SeatPicker.svelte';
   import { TEAM_NAME } from './labels';
   import { SHARE_MESSAGES, copyText, shareInvite } from './invite';
 
@@ -50,11 +52,21 @@
   }
 
   const statusLabel = (seat: LobbySnapshot['seats'][number]) =>
-    seat.kind === 'empty' ? 'Open seat' : seat.kind === 'bot' ? 'Bot' : seat.status === 'reconnecting' ? 'Reconnecting…' : 'Here';
+    seat.kind === 'empty' ? 'Open seat' : seat.kind === 'bot' ? 'Bot' : seat.kind === 'reserved' || seat.status === 'reconnecting' ? 'Reconnecting…' : 'Here';
 </script>
 
-{#if lobby && !session.isHost && lobby.mySeat === null}
-  <!-- Not seated yet: nothing to share or show until the host lets us in. -->
+{#if lobby && !session.isHost && lobby.mySeat === null && lobby.connection.kind === 'connected'}
+  <!-- Found the room but not seated yet: see the table and pick a seat (or wait for one). -->
+  <SeatPicker
+    {lobby}
+    {session}
+    onleave={() => {
+      session.leave();
+      onexit();
+    }}
+  />
+{:else if lobby && !session.isHost && lobby.mySeat === null}
+  <!-- Still looking for the room: nothing to share or show yet. -->
   <main class="lobby joining">
     <p class="label">Joining game</p>
     <p class="code">{formatRoomCode(session.roomCode)}</p>
@@ -100,6 +112,10 @@
         {/each}
       </ol>
     </section>
+
+    {#if host}
+      <JoinSettings policy={lobby.policy} onchange={(p) => host.setPolicy(p)} />
+    {/if}
 
     <footer>
       {#if host}

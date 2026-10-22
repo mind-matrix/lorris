@@ -24,6 +24,7 @@ export const DEFAULT_PACING: BotPacing = { bid: 700, play: 650, afterRound: 1100
 export class BotRunner {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
+  private paused = false;
   private unsubscribe: () => void;
 
   constructor(
@@ -34,22 +35,28 @@ export class BotRunner {
     this.unsubscribe = host.onChange(() => this.schedule());
   }
 
+  /** Stop all bot play (a pending or in-progress move is dropped), or start again. */
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+    this.schedule();
+  }
+
   /** If a bot is on turn, let it act after a short, human-friendly delay. */
   schedule(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     const seat = this.host.turn;
-    if (this.closed || seat === null || !this.botFor(seat)) return;
+    if (this.closed || this.paused || seat === null || !this.botFor(seat)) return;
 
     const view = this.host.view(seat);
     const version = this.host.version;
     this.timer = setTimeout(async () => {
       this.timer = null;
       const bot = this.botFor(seat);
-      if (this.closed || !bot) return;
+      if (this.closed || this.paused || !bot) return;
       const action = await bot.chooseAction(view, this.host.legalActions(seat));
-      // Act only if nothing changed while the bot was thinking (e.g. its human came back).
-      if (!this.closed && this.host.version === version && this.botFor(seat) === bot) this.host.submit(seat, action);
+      // Act only if nothing changed while the bot was thinking (its human came back, or a pause).
+      if (!this.closed && !this.paused && this.host.version === version && this.botFor(seat) === bot) this.host.submit(seat, action);
     }, this.delayFor(view));
   }
 

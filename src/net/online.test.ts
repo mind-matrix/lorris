@@ -7,37 +7,10 @@ import { HostSession } from './HostSession';
 import { InMemoryNetwork } from './inMemoryTransport';
 import { Outbox, PROTOCOL_VERSION } from './protocol';
 import { roomPassword } from './roomCode';
-import { ROOM, TEST_NET, autoplay, savedGame, setupGame, until, type SentRecord } from './testHarness';
+import { ROOM, TEST_NET, assertNoLeaks, autoplay, savedGame, setupGame, until } from './testHarness';
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
-
-/** Hidden-card check: no message to a client ever contains a card from someone else's hand. */
-function assertNoLeaks(sent: SentRecord[]): number {
-  const seatOf = new Map<string, number>();
-  let views = 0;
-  for (const { to, message, state } of sent) {
-    if (message.type === 'WELCOME') seatOf.set(to, message.seat as number);
-    if (!state) continue;
-    const seat = seatOf.get(to);
-    const json = JSON.stringify(message);
-    state.hands.forEach((hand: Card[], s: number) => {
-      if (s === seat) return;
-      for (const card of hand) {
-        if (json.includes(`"${card}"`)) throw new Error(`${message.type} to seat ${seat} leaked ${card} from seat ${s}`);
-      }
-    });
-    if (message.type === 'VIEW') {
-      views++;
-      const view = message.view as { seat: number; myHand: Card[] };
-      expect(view.seat).toBe(seat);
-      expect(view.myHand).toEqual(state.hands[seat!]);
-    }
-    expect(json).not.toContain('"rng"');
-    expect(json).not.toContain('"hands"');
-  }
-  return views;
-}
 
 async function playToEnd(game: Awaited<ReturnType<typeof setupGame>>, limitMs = 600_000) {
   const drivers = [autoplay(game.host, 0), ...game.clients.map((c) => autoplay(c, c.seats[0]))];
@@ -199,7 +172,7 @@ describe('online play over the in-memory network', () => {
     expect(lobby!.connection).toMatchObject({ kind: 'rejected', needsUpdate: true });
   });
 
-  it('lobby: full rooms, kicks, leaving, bots, and no joining once started', async () => {
+  it('lobby: full rooms, kicks, leaving, and bots', async () => {
     const game = await setupGame({ players: 4, clients: 2 });
     let lobby: LobbySnapshot | null = null;
     game.host.subscribeLobby((l) => (lobby = l));
@@ -212,13 +185,26 @@ describe('online play over the in-memory network', () => {
     await until(() => clientLobby!.seats[3].kind === 'bot', 1_000);
     expect(clientLobby!.seats.map((s) => s.name)).toEqual(['Host', 'Player 2', 'Player 3', 'Bot 4']);
 
-    // Full room.
+    // Before the start, a newcomer can take the host's bot seat...
     const late = new ClientSession({ transport: game.network.createTransport('late'), storage: new MemoryStore(), roomCode: ROOM, name: 'Late', net: TEST_NET });
-    let lateLobby: LobbySnapshot | null = null;
-    late.subscribeLobby((l) => (lateLobby = l));
     await late.open();
-    await until(() => lateLobby!.connection.kind === 'rejected', 1_000);
-    expect(lateLobby!.connection).toMatchObject({ kind: 'rejected', message: 'That game is full.' });
+    await until(() => late.seats.length === 1, 1_000);
+    expect(late.seats).toEqual([3]);
+    // ...and once every seat has a human, the next one is told the game is full but stays connected.
+    const full = new ClientSession({ transport: game.network.createTransport('full'), storage: new MemoryStore(), roomCode: ROOM, name: 'Full', net: TEST_NET });
+    let fullLobby: LobbySnapshot | null = null;
+    full.subscribeLobby((l) => (fullLobby = l));
+    await full.open();
+    await until(() => fullLobby!.notice !== null, 1_000);
+    expect(fullLobby!.connection.kind).toBe('connected');
+    expect(fullLobby!.mySeat).toBeNull();
+    expect(fullLobby!.notice).toBe('This game is full. You can wait for the next game or ask the host.');
+    late.leave();
+    await until(() => full.seats.length === 1, 2_000); // a seat opened: the waiting player gets it
+    expect(full.seats).toEqual([3]);
+    full.leave();
+    await until(() => lobby!.seats[3].kind === 'empty', 1_000);
+    game.host.addBot(3);
 
     // Kick seat 2; the kicked client is told, and the seat opens up.
     let kickedLobby: LobbySnapshot | null = null;
@@ -233,15 +219,8 @@ describe('online play over the in-memory network', () => {
     await until(() => lobby!.seats[1].kind === 'empty', 1_000);
     expect(lobby!.seats[1].kind).toBe('empty');
 
-    // Once started, newcomers without a seat token are turned away.
     game.host.start();
     expect(lobby!.seats.map((s) => s.kind)).toEqual(['human', 'bot', 'bot', 'bot']);
-    const newcomer = new ClientSession({ transport: game.network.createTransport('new'), storage: new MemoryStore(), roomCode: ROOM, name: 'New', net: TEST_NET });
-    let newLobby: LobbySnapshot | null = null;
-    newcomer.subscribeLobby((l) => (newLobby = l));
-    await newcomer.open();
-    await until(() => newLobby!.connection.kind === 'rejected', 1_000);
-    expect(newLobby!.connection).toMatchObject({ message: 'That game has already started.' });
   });
 
   it('a client looking for a room with no host gets a clear message, not an endless spinner', async () => {
@@ -271,11 +250,15 @@ describe('online play over the in-memory network', () => {
     expect(table!.connection.kind).toBe('waiting-for-host');
 
     // The host reopens the app: same storage, new peer ID.
-    const saved = await savedGame(game.hostStore);
-    const resumed = new HostSession({ transport: game.network.createTransport('host-again'), storage: game.hostStore, roomCode: ROOM, saved, net: TEST_NET, pacing: { bid: 5, play: 5, afterRound: 5, nextSet: 5, afterDeal: 5 } });
+    const saved = await savedGame(game.saves);
+    const resumed = new HostSession({ transport: game.network.createTransport('host-again'), saves: game.saves, roomCode: ROOM, saved, net: TEST_NET, pacing: { bid: 5, play: 5, afterRound: 5, nextSet: 5, afterDeal: 5 } });
     await resumed.open();
     await until(() => table!.connection.kind === 'connected', 3_000);
     expect(table!.connection.kind).toBe('connected');
+    // A reopened game waits, paused, until the host continues.
+    expect(table!.pause).toMatchObject({ paused: true, resuming: true });
+    await until(() => game.clients.every((c) => c.seats.length === 1), 3_000);
+    resumed.continueResumed();
 
     // Everyone picks up where they left off and can finish the game.
     const again = [autoplay(resumed, 0), ...game.clients.map((c) => autoplay(c, c.seats[0]))];

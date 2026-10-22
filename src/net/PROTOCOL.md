@@ -1,6 +1,6 @@
 # Lorris network protocol
 
-Version: **1** (`PROTOCOL_VERSION` in `protocol.ts`).
+Version: **3** (`PROTOCOL_VERSION` in `protocol.ts`). Version 2 added mid-game joining; version 3 added pausing, saving and resuming.
 
 Online games are peer to peer over WebRTC data channels (Trystero). Public Nostr relays are used
 only to find peers; game data never passes through them.
@@ -59,7 +59,9 @@ Every message is a JSON object with:
 | `ACTION` | `requestId: int`, `action: Action` | An intent for the sender's own seat. Validated (`parseAction`), then applied with the rules engine. |
 | `RESYNC` | none | "Send me my current `LOBBY` and `VIEW` again." |
 | `PING` | `t: int` | Heartbeat, every `heartbeatIntervalMs` (3 s). |
-| `LEAVE` | none | Leaving on purpose. In the lobby the seat is freed; mid-game a bot takes it over at once. |
+| `LEAVE` | none | Leaving on purpose. In the lobby the seat is freed; mid-game it becomes an open bot seat at once. |
+| `PAUSE_REQUEST` | none | "Can we pause?" The host decides. If they say no, the requester gets `EVENT pause-declined`. |
+| `TAKE_SEAT` | `seat: int \| null` | A newcomer (no seat yet) asks for a seat: a specific one, or `null` for any open seat. Answered with `WELCOME` or `SEAT_DENIED`. |
 
 Rules for `name` and `token`:
 - **`name`:** trimmed, with control, invisible and text-direction characters removed. At most
@@ -81,14 +83,31 @@ Any other fields are ignored.
 |---|---|---|
 | `WELCOME` | `seat`, `token`, `roomCode`, `config` | You're seated. Store `token` (IndexedDB) to reclaim the seat later. The client resets its stored versions, because a host that resumed from a save may be one step behind what the client last saw. |
 | `REJECTED` | `reason`, `hostVersion` | `VERSION_MISMATCH`, `ROOM_FULL`, `GAME_IN_PROGRESS`, `KICKED` or `RATE_LIMITED`. **Shape is frozen**, so any app version can show "please update". |
-| `LOBBY` | `lobbyVersion: int`, `seats: SeatInfo[]`, `started: bool` | Who sits where, and whether they're connected. Sent whenever that changes, both in the lobby and during the game. Ignored unless `lobbyVersion` is newer than the last one received. |
+| `LOBBY` | `lobbyVersion: int`, `seats: SeatInfo[]`, `started: bool`, `policy: JoinPolicy`, `table: TableSummary \| null`, `pause: PauseState` | Who sits where, whether they're connected, the join rules, and (once started) public facts about the game. Sent whenever that changes, to seated players **and to newcomers without a seat**. Ignored unless `lobbyVersion` is newer than the last one received. |
+| `SEAT_DENIED` | `reason` | A seat request that didn't work: `SEAT_TAKEN`, `RESERVED`, `NOT_OPEN`, `JOINS_DISABLED` or `NO_OPEN_SEATS`. It's also sent as `SEAT_EXPIRED` on a `HELLO` carrying the token of a seat that was given up. The newcomer stays connected. |
+| `EVENT` | `event` | Table news. Clients write the wording themselves. Kinds: `took-seat {seat, name}` ("Priya took over a bot seat."), `returned {seat, name}` (a player got their seat back from a bot after a resume), and `pause-declined` (sent to the player who asked). `pause-requested` is host-only and is never sent over the network. |
 | `VIEW` | `stateVersion: int`, `view: PlayerView` | The recipient's view after every change. Ignored unless `stateVersion` is newer, or if `view.seat` isn't the recipient's seat. |
 | `ACTION_RESULT` | `requestId`, `error: {code, message} \| null` | The answer to an `ACTION`. `code` is a rules-engine error code (such as `NOT_YOUR_TURN`) or `NOT_SEATED`. |
 | `PONG` | `t`, `stateVersion`, `lobbyVersion` | Reply to `PING`. If either version is ahead of the client's, the client missed a message and sends `RESYNC` (at most once a second). |
-| `HOST_STATUS` | `status: 'paused' \| 'ended'`, `message` | The host ended the game. `paused` is reserved for later. |
+| `HOST_STATUS` | `status: 'ended' \| 'saved'`, `message`, `label?` | `ended`: the host closed the game, and clients forget it. `saved`: the host saved the game and closed the room. Clients keep their seat token and a small reference (`label` holds the names and score only), so they can rejoin when the host resumes. `paused` is reserved and unused. |
 
-`SeatInfo` is `{ kind: 'empty' | 'human' | 'bot', name, status: 'connected' | 'reconnecting' | 'bot-controlled' }`.
-Seat tokens are never included.
+`SeatInfo` is `{ kind, name, status, reservedMs? }`. It never includes seat tokens. The four
+`kind`s:
+
+| `kind` | Meaning | Open to newcomers? |
+|---|---|---|
+| `empty` | Nobody sits here (lobby only). | Yes, before the start. |
+| `bot` | A bot from the start, or a seat a human left for good (left, was kicked, their reservation ran out, or the host released it). | Yes, mid-game, if `policy.midGameJoins` is on. |
+| `reserved` | A disconnected human holds the seat token. `status` is `reconnecting`, or `bot-controlled` once a bot covers their turns. `reservedMs` is the time left. | No, until the reservation runs out (`seatReservationMs`, 2 min) or the host releases it. |
+| `human` | A connected human. | Never. |
+
+`JoinPolicy` is `{ midGameJoins: bool, autoAssign: bool }`. Both are on by default.
+
+`TableSummary` is `{ setNumber, phase, scores, tricksWon, trump, contract, handCounts, turn }`.
+These are public facts only, never cards.
+
+`PauseState` is `{ paused: bool, by: Seat | null, resuming: bool }`. `resuming` means the host has
+reopened a saved game and is waiting for players before continuing.
 
 ## Flows
 
@@ -103,6 +122,26 @@ Seat tokens are never included.
 4. If no `WELCOME` arrives within `joinTimeoutMs` (20 s), the client stops and shows a friendly
    message. It suggests switching networks if Trystero reported a connection failure, and
    otherwise suggests checking the code.
+
+### Joining a game in progress
+
+1. A newcomer's `HELLO` (with no valid token) makes them a guest. The host sends `LOBBY`, which
+   includes the public table summary. There are at most `maxGuests` (12) guests; beyond that,
+   the reply is `REJECTED ROOM_FULL`.
+2. **Auto-assign on:** the host seats the guest in the first open bot seat straight away. If
+   there is none, it sends `SEAT_DENIED NO_OPEN_SEATS`, keeps the guest, and seats them on a
+   later heartbeat if a seat opens up.
+3. **Auto-assign off:** the guest picks a seat and sends `TAKE_SEAT`.
+4. **Taking the seat:** the host turns that seat into a human seat with a new token. The game
+   state isn't touched, so the newcomer inherits that seat's hand, team and position. A bot
+   move that is scheduled or being computed is dropped, because the bot runner rechecks who
+   controls the seat before submitting. Then:
+   - the newcomer gets `WELCOME`, `LOBBY` and `VIEW`
+   - everyone gets `EVENT took-seat`
+5. **Two claims at once:** the host handles one message at a time, so only one can win. The
+   other finds a human in the seat and gets `SEAT_DENIED SEAT_TAKEN`.
+6. **Returning after the reservation expired:** a player who comes back with the token of a
+   seat that was given up gets `SEAT_DENIED SEAT_EXPIRED`, and becomes a newcomer.
 
 ### Starting
 
@@ -121,8 +160,10 @@ The host sends `start`, which puts bots in any empty seats. Everyone gets `LOBBY
 ### Heartbeats and disconnects
 
 - **Silent client:** a client with no messages for `peerTimeoutMs` (9 s), or that Trystero
-  reports gone, shows as `reconnecting`. After `botTakeoverMs` (30 s), a bot plays the seat
-  (`bot-controlled`). In the lobby, the seat is freed instead.
+  reports gone, shows as `reserved` (`reconnecting`). After `botTakeoverMs` (30 s), a bot covers
+  their turns (`bot-controlled`). After `seatReservationMs` (2 min), the seat becomes an open
+  `bot` seat and their token stops working. In the lobby, the seat is freed after
+  `botTakeoverMs` instead.
 - **Returning client:** any valid message from the seat's peer, or a `HELLO` with the seat
   token from a new peer (after a reload), gives the human their seat back immediately. A bot
   move that was about to happen is cancelled.
@@ -146,6 +187,33 @@ The design is to pause and wait for the host, with a timeout:
   "Leave".
 - **Ending on purpose:** when the host ends the game, it sends `HOST_STATUS ended` and deletes
   its save.
+
+### Pausing
+
+- **Who can pause:** the host pauses directly. A player sends `PAUSE_REQUEST`, and the host
+  accepts (the game pauses, with `by` set to that player) or declines (`EVENT pause-declined`).
+- **While paused:**
+  - every `ACTION` gets `ACTION_RESULT` with error `PAUSED`
+  - bots stop, and any move one was computing is dropped
+  - the bot-takeover and reservation clocks are frozen
+- **Unpausing:** only the host can. The disconnect clocks restart with a fresh grace period, so
+  nobody loses a seat because of a pause.
+
+### Saving, leaving and resuming
+
+- **Saving:** the host autosaves after every move: the full state and lobby, in a checksummed
+  save envelope (see `src/save`), with **hashed** seat tokens. Saves stay on the host's device
+  only; clients never receive or store one.
+- **Save and close:** from the pause screen, the host saves, sends `HOST_STATUS saved`, and closes
+  the room.
+- **Resuming:** the host reopens the save, with the same room code and password. Everyone sees
+  `LOBBY` with `pause.resuming = true`. Returning players rejoin with their tokens through the
+  usual `HELLO` and get their own seats and hands back. Seats whose players haven't returned
+  show as `reserved`, so strangers are refused (`SEAT_DENIED RESERVED`).
+- **Continuing:** seats whose players haven't returned become free `bot` seats, so a bot plays
+  them and newcomers may take them. If the original player comes back while their seat is still
+  a bot seat, their token gets it back (`EVENT returned`).
+- **After a crash:** the latest autosave is resumed the same way.
 
 ### Version mismatch
 

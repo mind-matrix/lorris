@@ -21,12 +21,17 @@
     onexit,
     leaveQuestion = 'Leave this game?',
     online = null,
+    updateAvailable = false,
+    onupdate,
   }: {
     session: GameSession;
     onexit: () => void;
     leaveQuestion?: string;
     /** Set for online games, for reconnect/wait controls. */
     online?: OnlineSession | null;
+    /** A new app version is waiting: shown quietly in the menu, never over the table. */
+    updateAvailable?: boolean;
+    onupdate?: () => void;
   } = $props();
 
   // The UI only ever holds player views, one per human seat on this device.
@@ -237,6 +242,8 @@
       onleave={leave}
       roomCode={online?.roomCode ?? null}
       isHost={online?.isHost ?? false}
+      {updateAvailable}
+      {onupdate}
       onshare={() => (online?.isHost ? (roomOpen = true) : (guestMenuOpen = true))}
     />
 
@@ -371,6 +378,8 @@
       }}
       onclose={() => (guestMenuOpen = false)}
       onmessage={showToast}
+      {updateAvailable}
+      {onupdate}
     />
   {/if}
 
@@ -403,6 +412,8 @@
       host={online as OnlineSession & HostControls}
       onclose={() => (roomOpen = false)}
       onmessage={showToast}
+      {updateAvailable}
+      {onupdate}
     />
   {/if}
 

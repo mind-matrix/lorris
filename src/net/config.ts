@@ -1,5 +1,11 @@
 // Everything about online play you might want to tune lives here.
 
+/** A build-time variable (from .env.local or CI secrets), trimmed; '' when unset. */
+const env = (name: keyof ImportMetaEnv): string => {
+  const v = (import.meta as { env?: Record<string, unknown> }).env?.[name];
+  return typeof v === 'string' ? v.trim() : '';
+};
+
 export const NET_CONFIG = {
   /** Namespaces our rooms on the signaling network so other apps never see them. */
   appId: 'io.github.mind-matrix.lorris',
@@ -15,10 +21,31 @@ export const NET_CONFIG = {
   stunServers: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'],
 
   /**
-   * Optional TURN relays for networks that block direct connections. Empty by default because
-   * free TURN services need an account. Format: { urls, username, credential }.
+   * Optional TURN relays for networks that block direct WebRTC connections (common on mobile
+   * data). Both are configured at build time and both are optional; see .env.example.
+   * These values are built into the app and visible to anyone who opens it.
    */
-  turnServers: [] as { urls: string | string[]; username?: string; credential?: string }[],
+  turn: {
+    /** Open Relay by Metered: the subdomain of <app>.metered.live, and its API key. */
+    meteredApp: env('VITE_METERED_APP').toLowerCase(),
+    meteredApiKey: env('VITE_METERED_API_KEY'),
+    /** Our own coturn relay: comma-separated turn:/turns: URLs, plus its username and password. */
+    urls: env('VITE_TURN_URLS')
+      .split(',')
+      .map((u) => u.trim())
+      .filter(Boolean),
+    username: env('VITE_TURN_USERNAME'),
+    credential: env('VITE_TURN_CREDENTIAL'),
+  },
+  /** Give up on fetching Metered credentials after this long (play continues without them). */
+  iceFetchTimeoutMs: 4_000,
+  /** Keep a fetched ICE server list this long (shorter if Metered says its credentials expire sooner). */
+  iceCacheMs: 60 * 60_000,
+  /** After a failed fetch (or a failed connection), wait at least this long before fetching again. */
+  iceRetryMs: 60_000,
+  /** Every ICE server makes connection setup slower: keep the list lean. */
+  maxIceServers: 8,
+  maxMeteredServers: 6,
 
   /** How often clients ping the host. */
   heartbeatIntervalMs: 3_000,

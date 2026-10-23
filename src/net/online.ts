@@ -9,6 +9,10 @@ import { ClientSession } from './ClientSession';
 import { HostSession } from './HostSession';
 import { generateRoomCode } from './roomCode';
 import { TrysteroTransport } from './trysteroTransport';
+import { prefetchIceServers } from './iceServers';
+
+// Online play is opening (this module loads lazily): fetch relay credentials in the background now.
+prefetchIceServers();
 
 const storage = defaultStore();
 

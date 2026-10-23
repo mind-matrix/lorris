@@ -13,7 +13,17 @@
     host,
     onclose,
     onmessage,
-  }: { lobby: LobbySnapshot; host: HostControls; onclose: () => void; onmessage: (text: string) => void } = $props();
+    updateAvailable = false,
+    onupdate,
+  }: {
+    lobby: LobbySnapshot;
+    host: HostControls;
+    onclose: () => void;
+    onmessage: (text: string) => void;
+    updateAvailable?: boolean;
+    onupdate?: () => void;
+  } = $props();
+  const updateNote = 'The game is paused and saved first; resume it after the update.';
 
   let now = $state(Date.now());
   const timer = setInterval(() => (now = Date.now()), 1000);
@@ -40,6 +50,13 @@
 <div class="backdrop" onclick={onclose} role="presentation"></div>
 <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="room-title">
   <h2 id="room-title">Room</h2>
+
+  {#if updateAvailable}
+    <div class="update-row">
+      <span><b>Update available</b><small>{updateNote}</small></span>
+      <button class="btn" onclick={onupdate}>Update now</button>
+    </div>
+  {/if}
 
   <button class="btn big" onclick={share}>Share invite link</button>
   <button class="code" onclick={copyCode} aria-label="Room code {formatRoomCode(lobby.roomCode)}, tap to copy">
@@ -92,6 +109,22 @@
 </div>
 
 <style>
+  .update-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--bg);
+    box-shadow: inset 0 0 0 2px var(--accent);
+    text-align: left;
+  }
+  .update-row small {
+    display: block;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
   .backdrop {
     position: fixed;
     inset: 0;

@@ -9,6 +9,8 @@
     roomCode = null,
     onshare,
     isHost = false,
+    updateAvailable = false,
+    onupdate,
   }: {
     view: PlayerView;
     onleave: () => void;
@@ -17,6 +19,9 @@
     onshare?: () => void;
     /** The host's button opens the Room sheet (with sharing inside) instead of sharing directly. */
     isHost?: boolean;
+    /** A new app version is waiting: a dot on the menu button online, an Update chip offline. */
+    updateAvailable?: boolean;
+    onupdate?: () => void;
   } = $props();
   const myTeam = $derived(teamOf(view.seat));
 
@@ -54,7 +59,10 @@
           </svg>
         {/if}
         <span class="code">{formatRoomCode(roomCode)}</span>
+        {#if updateAvailable}<span class="dot" title="Update available"></span>{/if}
       </button>
+    {:else if updateAvailable}
+      <button class="btn secondary update" onclick={onupdate}>Update</button>
     {/if}
     <button class="btn secondary leave" class:alone={!roomCode} onclick={onleave}>Leave</button>
   </div>
@@ -107,6 +115,26 @@
   .trump.red b {
     color: var(--red-suit);
   }
+  .share {
+    position: relative;
+  }
+  /* A quiet "new version" marker on the menu button; the menu itself has the Update button. */
+  .dot {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--panel);
+  }
+  .update {
+    margin-left: auto;
+    min-height: 36px;
+    padding: 0 12px;
+    font-size: 0.85rem;
+  }
   .leave,
   .share {
     min-height: 36px;
@@ -117,6 +145,9 @@
   .share,
   .leave.alone {
     margin-left: auto;
+  }
+  .update + .leave.alone {
+    margin-left: 0;
   }
   .share {
     display: inline-flex;

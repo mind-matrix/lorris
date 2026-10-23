@@ -39,6 +39,22 @@ jobs:
         env:
           # Project pages live at https://<owner>.github.io/<repo>/
           BASE_PATH: /${{ github.event.repository.name }}/
+          # Optional TURN relays (repository secrets; empty = relay not used). See .env.example.
+          VITE_METERED_APP: ${{ secrets.VITE_METERED_APP }}
+          VITE_METERED_API_KEY: ${{ secrets.VITE_METERED_API_KEY }}
+          VITE_TURN_URLS: ${{ secrets.VITE_TURN_URLS }}
+          VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
+          VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
+
+      - name: Check relay settings in the build
+        # Fails on a half-configured relay, or a secret that didn't make it into the build.
+        run: node scripts/check-relay-build.mjs dist
+        env:
+          VITE_METERED_APP: ${{ secrets.VITE_METERED_APP }}
+          VITE_METERED_API_KEY: ${{ secrets.VITE_METERED_API_KEY }}
+          VITE_TURN_URLS: ${{ secrets.VITE_TURN_URLS }}
+          VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
+          VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
 
       - uses: actions/configure-pages@v5
 

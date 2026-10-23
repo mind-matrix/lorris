@@ -6,14 +6,19 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 
 export default defineConfig(({ mode }) => ({
-  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    // Tells deploys apart even when package.json isn't bumped: the commit in CI, "dev" locally.
+    __BUILD_ID__: JSON.stringify((loadEnv(mode, '.', 'GITHUB_SHA').GITHUB_SHA ?? '').slice(0, 7) || 'dev'),
+  },
   // Served from a sub-path on GitHub Pages (e.g. /lorris/); the deploy workflow sets BASE_PATH.
   base: loadEnv(mode, '.', 'BASE_PATH').BASE_PATH || '/',
   plugins: [
     svelte(),
     VitePWA({
-      registerType: 'autoUpdate',
-      includeAssets: ['icons/*.png'],
+      // A new version waits until the player chooses to update (see src/pwa), so nothing
+      // reloads under them mid-game. All assets except index.html have content-hashed names.
+      registerType: 'prompt',
       manifest: {
         name: 'Lorris',
         short_name: 'Lorris',

@@ -8,6 +8,7 @@
 <script lang="ts">
   import { SUPPORTED_PLAYER_COUNTS } from '../core';
   import HowToPlay from './HowToPlay.svelte';
+  import { APP_VERSION_LABEL } from '../pwa/version';
   import { formatRoomCode } from '../net/roomCode';
 
   let {
@@ -23,6 +24,7 @@
     savedCount = 0,
     onsavedgames,
     message = null,
+    onchecknow,
   }: {
     onstart: (setup: GameSetup) => void;
     onhost: () => void;
@@ -41,7 +43,10 @@
     onsavedgames: () => void;
     /** A problem to show (e.g. a damaged save). */
     message?: string | null;
+    /** "Check for updates" in About. Resolves to whether the check reached the server. */
+    onchecknow: () => Promise<boolean>;
   } = $props();
+  let checkStatus = $state<string | null>(null);
 
   let playerCount = $state<number>(SUPPORTED_PLAYER_COUNTS[0]);
   let botCount = $state(3);
@@ -122,13 +127,29 @@
     <summary>How to Play</summary>
     <HowToPlay />
   </details>
+
+  <details class="about">
+    <summary>About</summary>
+    <p>Lorris, version <b>{APP_VERSION_LABEL}</b></p>
+    <button
+      class="btn secondary"
+      onclick={async () => {
+        checkStatus = 'Checking…';
+        const ok = await onchecknow();
+        // If something new was found, the "Update available" banner appears by itself.
+        setTimeout(() => (checkStatus = ok ? "You'll see a banner if an update is available." : "Couldn't check right now. Are you online?"), 800);
+      }}>Check for updates</button
+    >
+    {#if checkStatus}<p class="small" aria-live="polite">{checkStatus}</p>{/if}
+  </details>
 </main>
 
 <style>
   .start {
     max-width: 420px;
     margin: 0 auto;
-    padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+    /* Extra room at the bottom so the "Update available" banner never hides anything. */
+    padding: 24px 16px calc(80px + env(safe-area-inset-bottom));
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -213,6 +234,13 @@
   details {
     text-align: left;
     font-size: 0.9rem;
+  }
+  .about p {
+    margin: 0 0 8px;
+  }
+  .about .small {
+    margin-top: 8px;
+    color: var(--muted);
   }
   summary {
     cursor: pointer;

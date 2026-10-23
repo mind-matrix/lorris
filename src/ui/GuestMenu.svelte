@@ -9,7 +9,18 @@
     onpause,
     onclose,
     onmessage,
-  }: { roomCode: string; paused: boolean; onpause: () => void; onclose: () => void; onmessage: (t: string) => void } = $props();
+    updateAvailable = false,
+    onupdate,
+  }: {
+    roomCode: string;
+    paused: boolean;
+    onpause: () => void;
+    onclose: () => void;
+    onmessage: (t: string) => void;
+    updateAvailable?: boolean;
+    onupdate?: () => void;
+  } = $props();
+  const updateNote = 'You rejoin your seat right after.';
 
   async function share() {
     const m = SHARE_MESSAGES[await shareInvite(roomCode)];
@@ -20,6 +31,13 @@
 <div class="backdrop" onclick={onclose} role="presentation"></div>
 <div class="sheet" role="dialog" aria-modal="true" aria-label="Game menu">
   <p class="code">{formatRoomCode(roomCode)}</p>
+
+  {#if updateAvailable}
+    <div class="update-row">
+      <span><b>Update available</b><small>{updateNote}</small></span>
+      <button class="btn" onclick={onupdate}>Update now</button>
+    </div>
+  {/if}
   <button class="btn big" onclick={share}>Share invite link</button>
   <button
     class="btn secondary"
@@ -35,6 +53,22 @@
 </div>
 
 <style>
+  .update-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--bg);
+    box-shadow: inset 0 0 0 2px var(--accent);
+    text-align: left;
+  }
+  .update-row small {
+    display: block;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
   .backdrop {
     position: fixed;
     inset: 0;

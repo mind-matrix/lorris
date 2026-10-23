@@ -258,13 +258,19 @@ describe('online play over the in-memory network', () => {
     // A reopened game waits, paused, until the host continues.
     expect(table!.pause).toMatchObject({ paused: true, resuming: true });
     await until(() => game.clients.every((c) => c.seats.length === 1), 3_000);
+    // While still paused, every client is back on exactly the saved position.
+    const lastBefore = saved.game!.state;
+    for (const c of game.clients) {
+      let v = null as null | { scores: [number, number]; myHand: string[] };
+      c.subscribe(c.seats[0], (x) => (v = x));
+      await until(() => v !== null, 1_000);
+      expect(v!.scores).toEqual(lastBefore.scores);
+      expect(v!.myHand).toEqual(lastBefore.hands[c.seats[0]]);
+    }
     resumed.continueResumed();
 
     // Everyone picks up where they left off and can finish the game.
     const again = [autoplay(resumed, 0), ...game.clients.map((c) => autoplay(c, c.seats[0]))];
-    const lastBefore = saved.game!.state;
-    await vi.advanceTimersByTimeAsync(500);
-    expect(again[1].latest()!.scores).toEqual(lastBefore.scores);
     const finished = await until(() => again[0].latest()?.phase === 'gameOver', 900_000, 500);
     again.forEach((d) => d.stop());
     expect(finished).toBe(true);

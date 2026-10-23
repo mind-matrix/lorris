@@ -3,6 +3,7 @@
 
 import { joinRoom, selfId, type Room } from 'trystero';
 import { NET_CONFIG } from './config';
+import { getIceServers, invalidateIceServers } from './iceServers';
 import { Emitter, type PeerId, type Transport, type TransportError } from './transport';
 
 export class TrysteroTransport implements Transport {
@@ -13,24 +14,33 @@ export class TrysteroTransport implements Transport {
   private joins = new Emitter<[PeerId]>();
   private leaves = new Emitter<[PeerId]>();
   private errors = new Emitter<[TransportError]>();
+  /** Bumped by every connect() and disconnect(), so a connect() still waiting can tell it's stale. */
+  private attempt = 0;
 
   async connect(roomId: string, password: string): Promise<void> {
     this.disconnect();
+    const attempt = this.attempt;
+    // STUN + our relay + Metered relays. Bounded by a short timeout, and usually cached already.
+    const iceServers = await getIceServers();
+    // disconnect() (or another connect()) happened while we waited: don't join after all.
+    if (attempt !== this.attempt) return;
     const room = joinRoom(
       {
         appId: NET_CONFIG.appId,
         password,
         maxReceiveBytes: NET_CONFIG.maxHostMessageBytes,
         ...(NET_CONFIG.relayUrls ? { relayConfig: { urls: NET_CONFIG.relayUrls } } : {}),
-        rtcConfig: {
-          iceServers: [{ urls: NET_CONFIG.stunServers }, ...NET_CONFIG.turnServers],
-        },
+        rtcConfig: { iceServers },
       },
       roomId,
       {
         // Fires on a wrong password, a failed handshake, or when WebRTC can't connect at all
         // (usually a network that blocks peer-to-peer traffic).
-        onJoinError: (details) => this.errors.emit({ kind: 'peer-connection-failed', peer: details.peerId, detail: details.error }),
+        onJoinError: (details) => {
+          // Maybe the relay credentials expired: fetch fresh ones next time (rate-limited).
+          invalidateIceServers();
+          this.errors.emit({ kind: 'peer-connection-failed', peer: details.peerId, detail: details.error });
+        },
       },
     );
     // One action carries every protocol message; the protocol layer tells them apart.
@@ -67,6 +77,7 @@ export class TrysteroTransport implements Transport {
   }
 
   disconnect(): void {
+    this.attempt++;
     this.room?.leave().catch(() => {});
     this.room = null;
     this.sendRaw = null;

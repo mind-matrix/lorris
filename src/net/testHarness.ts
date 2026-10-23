@@ -2,7 +2,7 @@
 // a HeuristicBot through its own session (so it sees exactly what a person would see).
 
 import { vi } from 'vitest';
-import { HeuristicBot } from '../ai';
+import { HeuristicBot, IsmctsBot, setInGameBotFactory } from '../ai';
 import { getLegalActionsFromView, makeConfig, type GameState, type PlayerView, type Seat } from '../core';
 import type { BotPacing } from '../session/BotRunner';
 import { MemoryStore } from '../session/storage';
@@ -16,6 +16,15 @@ import { InMemoryNetwork, type InMemoryNetworkOptions } from './inMemoryTranspor
 import type { PeerId } from './transport';
 
 export const ROOM = 'ABCDEF';
+
+/**
+ * Tests use the real in-game bot (ISMCTS) with a small, iteration-capped budget: deterministic
+ * and quick. Time budgets are never used in tests.
+ */
+export const TEST_BOT_BUDGET = { deterministic: true, maxIterations: 40 };
+// Seeds come from a counter, not the random default, so every test run plays identically.
+let testBotSeed = 1;
+setInGameBotFactory(() => new IsmctsBot(testBotSeed++, { budget: TEST_BOT_BUDGET }));
 export const FAST_PACING: BotPacing = { bid: 5, play: 5, afterRound: 5, nextSet: 5, afterDeal: 5 };
 export const TEST_NET: NetConfig = {
   ...NET_CONFIG,

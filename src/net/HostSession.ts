@@ -1,7 +1,7 @@
 // The host: holds the full game state, runs every bot, and talks to clients. Clients only
 // ever get their own player view; every action they send is validated by the rules engine.
 
-import { HeuristicBot, type Bot } from '../ai';
+import { IN_GAME_BOT, createInGameBot, type Bot } from '../ai';
 import type { Action, GameConfig, GameState, PlayerView, Seat } from '../core';
 import { BotRunner, DEFAULT_PACING, type BotPacing } from '../session/BotRunner';
 import { GameHost } from '../session/GameHost';
@@ -133,7 +133,7 @@ export class HostSession implements OnlineSession, HostControls {
     this.roomCode = opts.roomCode;
     this.net = opts.net ?? NET_CONFIG;
     this.pacing = opts.pacing ?? DEFAULT_PACING;
-    this.makeBot = opts.makeBot ?? (() => new HeuristicBot());
+    this.makeBot = opts.makeBot ?? (() => createInGameBot());
     this.onSendHook = opts.onSend;
     this.seed = opts.seed ?? crypto.getRandomValues(new Uint32Array(1))[0];
 
@@ -427,7 +427,7 @@ export class HostSession implements OnlineSession, HostControls {
     const seats: SavedSeat[] = this.lobby.seats.map((s) =>
       s.kind === 'human' && s.tokenHash
         ? { name: s.name, kind: 'human', tokenHash: s.tokenHash }
-        : { name: s.name || 'Bot', kind: 'bot', bot: { difficulty: 'heuristic' } },
+        : { name: s.name || 'Bot', kind: 'bot', bot: { difficulty: IN_GAME_BOT } },
     );
     return createEnvelope({
       id: hostedSaveId(this.roomCode),

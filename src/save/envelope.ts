@@ -17,7 +17,8 @@ export const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__
 export interface SavedSeat {
   name: string;
   kind: 'human' | 'bot';
-  bot?: { difficulty: 'heuristic' };
+  /** Informational only: whatever bot kind wrote the save. On load, seats are played by the current in-game bot. */
+  bot?: { difficulty: string };
   /** Online games: SHA-256 of the seat token (never the token itself). */
   tokenHash?: string;
 }

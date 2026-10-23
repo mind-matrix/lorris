@@ -1,13 +1,13 @@
 // Offline games: autosave after every move, and rebuild a LocalSession from a save.
 
-import { HeuristicBot } from '../ai';
+import { IN_GAME_BOT, createInGameBot } from '../ai';
 import { DEFAULT_PACING, LocalSession, type BotPacing } from '../session/LocalSession';
 import { createEnvelope, type SaveEnvelope, type SavedSeat } from './envelope';
 import { Autosaver, type SaveStore } from './SaveStore';
 
 export function offlineSeats(session: LocalSession): SavedSeat[] {
   return session.botSeats.map((bot, seat) =>
-    bot ? { name: session.names[seat], kind: 'bot', bot: { difficulty: 'heuristic' } } : { name: session.names[seat], kind: 'human' },
+    bot ? { name: session.names[seat], kind: 'bot', bot: { difficulty: IN_GAME_BOT } } : { name: session.names[seat], kind: 'human' },
   );
 }
 
@@ -34,6 +34,7 @@ export function autosaveOffline(store: SaveStore, id: string, session: LocalSess
 
 /** Rebuilds an offline game from a (validated) save: same state, same names, same bots. */
 export function restoreOffline(save: SaveEnvelope, pacing: BotPacing = DEFAULT_PACING): LocalSession {
-  const bots = save.seats.map((s) => (s.kind === 'bot' ? new HeuristicBot() : null));
+  // Whatever bot a save mentions (e.g. 'heuristic'), its seats are played by today's in-game bot.
+  const bots = save.seats.map((s) => (s.kind === 'bot' ? createInGameBot() : null));
   return new LocalSession({ snapshot: save.game }, bots, save.seats.map((s) => s.name), pacing);
 }

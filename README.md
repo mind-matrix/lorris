@@ -154,6 +154,32 @@ To build for a different sub-path locally, set `BASE_PATH`:
 BASE_PATH=/lorris/ npm run build
 ```
 
+### Network relays (TURN)
+
+Online games connect players directly with WebRTC. Some networks, mobile carriers especially,
+block direct connections; a TURN relay passes the traffic along for those players. WebRTC still
+prefers a direct connection whenever one works, so relays are only used when needed. Two relays
+are supported, both optional; if one is down or out of quota, the other still works:
+
+| Variable | What it is |
+|---|---|
+| `VITE_METERED_APP` | [Open Relay by Metered](https://www.metered.ca/tools/openrelay/): your subdomain only (`lorris` for `lorris.metered.live`) |
+| `VITE_METERED_API_KEY` | Metered API key; TURN credentials are fetched with it at runtime |
+| `VITE_TURN_URLS` | Your own coturn relay: comma-separated `turn:`/`turns:` URLs |
+| `VITE_TURN_USERNAME` | Your relay's username |
+| `VITE_TURN_CREDENTIAL` | Your relay's password |
+
+- **GitHub Pages:** add them under the repository's *Settings → Secrets and variables → Actions*
+  as repository secrets with exactly these names. The deploy workflow passes them to the build,
+  and `scripts/check-relay-build.mjs` fails the deploy if a relay is half-configured or a value
+  didn't make it into the build.
+- **Local builds:** copy `.env.example` to `.env.local` (git-ignored) and fill it in.
+- Leave a relay's variables empty to not use it.
+
+> **These values are public.** They're built into the app, so anyone who opens it can read
+> them. That's unavoidable without a backend. We rely on the relays' quotas, and rotate the
+> credentials if they're abused.
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Roadmap

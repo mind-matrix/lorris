@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { makeConfig } from '../core';
-  import { HeuristicBot, type Bot } from '../ai';
+  import { createInGameBot, type Bot } from '../ai';
   import { roomCodeFromHash } from '../net/roomCode';
   import { DEFAULT_PACING, LocalSession } from '../session/LocalSession';
   import { loadName } from '../session/profile';
@@ -20,13 +20,19 @@
   import SavesFullDialog from './SavesFullDialog.svelte';
   import StartScreen, { type GameSetup } from './StartScreen.svelte';
   import { dealDurationMs } from './timing';
+  import UpdateBanner from './UpdateBanner.svelte';
+  import { applyUpdate, checkForUpdate } from '../pwa/register';
+  import { pwaState } from '../pwa/state.svelte';
+  import { saveThenUpdate, type UpdateContext } from '../pwa/updateFlow';
+  import type { Autosaver } from '../save/SaveStore';
+  import type { HostControls } from '../session/types';
 
   type Screen =
     | { kind: 'menu' }
     | { kind: 'saves' }
     | { kind: 'setup'; mode: 'host' | 'join'; code: string | null }
     | { kind: 'lobby'; session: OnlineSession }
-    | { kind: 'game'; session: GameSession; online: OnlineSession | null; stopSaving?: () => void };
+    | { kind: 'game'; session: GameSession; online: OnlineSession | null; stopSaving?: () => void; autosaver?: Autosaver };
 
   let screen = $state<Screen>({ kind: 'menu' });
   let busy = $state(false);
@@ -101,13 +107,13 @@
     fullFor = null;
     const humans = playerCount - botCount;
     // Humans take the first seats, so a lone human sits at seat 0; bots fill the rest.
-    const bots: (Bot | null)[] = Array.from({ length: playerCount }, (_, seat) => (seat < humans ? null : new HeuristicBot()));
+    const bots: (Bot | null)[] = Array.from({ length: playerCount }, (_, seat) => (seat < humans ? null : createInGameBot()));
     const names = bots.map((bot, seat) => (bot ? `Bot ${seat + 1}` : humans === 1 ? 'You' : `Player ${seat + 1}`));
     const seed = crypto.getRandomValues(new Uint32Array(1))[0];
     const session = new LocalSession({ config: makeConfig(playerCount), seed }, bots, names, pacingFor(playerCount));
     // Autosave after every move, so closing the app (or a crash) loses nothing.
-    const stopSaving = withSaving ? autosaveOffline(saveStore, newSaveId(), session).stop : undefined;
-    screen = { kind: 'game', session, online: null, stopSaving };
+    const saving = withSaving ? autosaveOffline(saveStore, newSaveId(), session) : null;
+    screen = { kind: 'game', session, online: null, stopSaving: saving?.stop, autosaver: saving?.autosaver };
   }
 
   /** Returns an error message to show, or null once the game is open. */
@@ -115,8 +121,8 @@
     const loaded = await saveStore.load(id);
     if (!loaded.ok) return loaded.error.message;
     const session = restoreOffline(loaded.save, pacingFor(loaded.save.game.state.config.playerCount));
-    const { stop } = autosaveOffline(saveStore, id, session);
-    screen = { kind: 'game', session, online: null, stopSaving: stop };
+    const { stop, autosaver } = autosaveOffline(saveStore, id, session);
+    screen = { kind: 'game', session, online: null, stopSaving: stop, autosaver };
     return null;
   }
 
@@ -208,6 +214,27 @@
     await refresh();
   }
 
+  // ---------- App updates ----------
+
+  /**
+   * Switch to the new version. Mid-game, save first: offline games finish their autosave; an
+   * online host pauses, saves and tells everyone; a client just rejoins its seat afterwards.
+   */
+  async function updateNow() {
+    const ctx: UpdateContext = {};
+    if (screen.kind === 'game') {
+      const question = !screen.online
+        ? 'Update now? Your game is saved and you can resume it right after.'
+        : screen.online.isHost
+          ? 'Update now? The game is paused and saved, and everyone is told. Tap "Resume hosting" after the update.'
+          : "Update now? You'll leave the table for a moment; tap \"Rejoin\" after the update to get your seat back.";
+      if (!confirm(question)) return;
+      if (!screen.online) ctx.offline = screen.autosaver ?? null;
+      else if (screen.online.isHost) ctx.host = screen.online as OnlineSession & HostControls;
+    }
+    await saveThenUpdate(ctx, applyUpdate);
+  }
+
   // ---------- Leaving ----------
 
   function toMenu() {
@@ -243,6 +270,8 @@
           ? 'Leave this game? It is saved, so you can resume it later.'
           : 'Leave this game? It is not saved.'}
       online={screen.online}
+      updateAvailable={pwaState.updateAvailable}
+      onupdate={updateNow}
     />
   {/key}
 {:else if screen.kind === 'lobby'}
@@ -297,6 +326,7 @@
     savedCount={saves.length + refs.length}
     onsavedgames={() => (screen = { kind: 'saves' })}
     message={menuMessage}
+    onchecknow={checkForUpdate}
   />
   {#if fullFor}
     <SavesFullDialog
@@ -309,6 +339,11 @@
       oncancel={() => (fullFor = null)}
     />
   {/if}
+{/if}
+
+<!-- The full banner only where nobody is mid-game: the start screen, saved games, and setup. -->
+{#if pwaState.updateAvailable && (screen.kind === 'menu' || screen.kind === 'saves' || screen.kind === 'setup')}
+  <UpdateBanner updating={pwaState.updating} onupdate={updateNow} />
 {/if}
 
 <style>

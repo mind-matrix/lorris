@@ -9,6 +9,10 @@ import { autosaveOffline, offlineEnvelope, restoreOffline } from './offline';
 import { Autosaver, MAX_SAVES, SaveLimitError, SaveStore } from './SaveStore';
 import { hashToken, sha256 } from './sha256';
 import { LocalSession } from '../session/LocalSession';
+import { IsmctsBot, setInGameBotFactory } from '../ai';
+
+// The real in-game bot, iteration-capped so tests stay quick and deterministic.
+setInGameBotFactory((seed) => new IsmctsBot(seed, { budget: { deterministic: true, maxIterations: 10 } }));
 
 const seatsFor = (n: number): SavedSeat[] =>
   Array.from({ length: n }, (_, i) => (i === 0 ? { name: 'Asha', kind: 'human' } : { name: `Bot ${i + 1}`, kind: 'bot', bot: { difficulty: 'heuristic' } }));

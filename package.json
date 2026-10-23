@@ -10,7 +10,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "assets": "node scripts/build-assets.mjs"
+    "assets": "node scripts/build-assets.mjs",
+    "tournament": "node scripts/tournament.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.1.1",
@@ -19,6 +20,7 @@
     "svelte-check": "^4.7.7",
     "typescript": "^5.9.3",
     "vite": "^6.4.5",
+    "vite-node": "3.2.4",
     "vite-plugin-pwa": "^0.21.2",
     "vitest": "^3.2.7",
     "workbox-build": "^7.3.0",

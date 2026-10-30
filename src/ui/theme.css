@@ -93,3 +93,38 @@ button {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------- Halloween season (Oct 18 – Nov 7) ----------
+   The app sets data-season="halloween" on <html>. Every screen uses the color tokens, so
+   overriding them here re-themes the whole game: a candlelit purple table, pumpkin orange
+   accents. Always dark, whatever the device's light/dark setting. */
+:root[data-season='halloween'] {
+  color-scheme: dark;
+  --bg: #140d1a;
+  --fg: #f3e9dc;
+  --muted: #b9a7c6;
+  --panel: #221629;
+  --line: #3e2b4a;
+  --felt: #22112e;
+  --felt-light: #3a1d4b;
+  --felt-edge: #0d0712;
+  --accent: #ff7a1a;
+  --team-a: #ff9a3c;
+  --team-b: #a68bff;
+  --good: #8fd36b;
+  --bad: #ff6262;
+  --red-suit: #ff6b6b;
+  /* A faint pumpkin glow rising from the bottom of the screen. */
+  background:
+    radial-gradient(ellipse 120% 45% at 50% 115%, rgba(255, 122, 26, 0.14), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
+}
+
+/* The title's blood-dripping lettering. A 1.6 KB subset of the open-source Nosifer font
+   (SIL Open Font License, renamed as that license requires): see assets/fonts. */
+@font-face {
+  font-family: 'Lorris Blood';
+  src: url('./assets/fonts/lorris-blood.woff2') format('woff2');
+  font-display: swap;
+}

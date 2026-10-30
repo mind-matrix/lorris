@@ -1,23 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { JOKER, type Card, type GameEvent } from '../core';
 import { ANIMATION_SECONDS, REDUCED_MOTION_MS } from '../ui/seasonal/hauntedPortrait';
-import { HALLOWEEN_JOKER_MS, HALLOWEEN_JOKER_PAUSE_MS, isHalloweenWeek, jokerJustPlayed } from './halloween';
+import { HALLOWEEN_JOKER_MS, HALLOWEEN_JOKER_PAUSE_MS, isHalloweenSeason, jokerJustPlayed } from './halloween';
 
-describe('isHalloweenWeek', () => {
-  it('covers October 25 to 31 in India time, every year', () => {
-    // IST is UTC+5:30, so India's October 25 starts at 18:30 UTC on October 24.
-    expect(isHalloweenWeek(new Date('2026-10-24T18:29:59Z'))).toBe(false);
-    expect(isHalloweenWeek(new Date('2026-10-24T18:30:00Z'))).toBe(true);
-    expect(isHalloweenWeek(new Date('2026-10-30T12:00:00Z'))).toBe(true);
-    expect(isHalloweenWeek(new Date('2026-10-31T18:29:59Z'))).toBe(true);
-    expect(isHalloweenWeek(new Date('2026-10-31T18:30:00Z'))).toBe(false);
-    expect(isHalloweenWeek(new Date('2027-10-28T06:00:00Z'))).toBe(true);
-    expect(isHalloweenWeek(new Date('2031-10-25T00:00:00Z'))).toBe(true);
+describe('isHalloweenSeason', () => {
+  it('covers October 18 to November 7 in India time, every year', () => {
+    // IST is UTC+5:30, so India's October 18 starts at 18:30 UTC on October 17.
+    expect(isHalloweenSeason(new Date('2026-10-17T18:29:59Z'))).toBe(false);
+    expect(isHalloweenSeason(new Date('2026-10-17T18:30:00Z'))).toBe(true);
+    expect(isHalloweenSeason(new Date('2026-10-31T12:00:00Z'))).toBe(true);
+    expect(isHalloweenSeason(new Date('2026-11-01T06:00:00Z'))).toBe(true);
+    expect(isHalloweenSeason(new Date('2026-11-07T18:29:59Z'))).toBe(true);
+    expect(isHalloweenSeason(new Date('2026-11-07T18:30:00Z'))).toBe(false);
+    expect(isHalloweenSeason(new Date('2027-10-20T06:00:00Z'))).toBe(true);
+    expect(isHalloweenSeason(new Date('2031-11-05T00:00:00Z'))).toBe(true);
   });
 
   it('is off the rest of the year', () => {
-    for (const d of ['2026-01-28', '2026-09-28', '2026-10-20', '2026-11-03', '2026-12-31']) {
-      expect(isHalloweenWeek(new Date(`${d}T06:00:00Z`))).toBe(false);
+    for (const d of ['2026-01-28', '2026-09-28', '2026-10-15', '2026-11-10', '2026-12-31']) {
+      expect(isHalloweenSeason(new Date(`${d}T06:00:00Z`))).toBe(false);
     }
   });
 });

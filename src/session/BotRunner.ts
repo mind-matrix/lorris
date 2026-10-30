@@ -1,7 +1,7 @@
 import type { Bot } from '../ai';
 import type { GameEvent, PlayerView, Seat } from '../core';
 import type { GameHost } from './GameHost';
-import { HALLOWEEN_JOKER_PAUSE_MS, isHalloweenWeek, jokerJustPlayed } from '../seasonal/halloween';
+import { HALLOWEEN_JOKER_PAUSE_MS, isHalloweenSeason, jokerJustPlayed } from '../seasonal/halloween';
 
 /** How long bots wait before acting, so humans can follow along. */
 export interface BotPacing {
@@ -14,7 +14,7 @@ export interface BotPacing {
   /** Pause after cards are dealt (covers the UI's deal animation) before the first call. */
   afterDeal: number;
   /**
-   * Pause after the Joker is played during Halloween week, while every player watches the
+   * Pause after the Joker is played during Halloween season, while every player watches the
    * Joker animation. Omitted or 0: no extra pause.
    */
   halloweenJoker?: number;
@@ -120,9 +120,9 @@ export class BotRunner {
 
   private delayFor(view: PlayerView): number {
     const base = this.baseDelay(view);
-    // Halloween week: hold off while everyone watches the Joker animation.
+    // Halloween season: hold off while everyone watches the Joker animation.
     const joker = this.pacing.halloweenJoker ?? 0;
-    if (joker > 0 && jokerJustPlayed(view.log) && isHalloweenWeek(this.now())) return Math.max(base, joker);
+    if (joker > 0 && jokerJustPlayed(view.log) && isHalloweenSeason(this.now())) return Math.max(base, joker);
     return base;
   }
 

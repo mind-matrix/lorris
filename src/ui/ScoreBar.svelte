@@ -11,6 +11,7 @@
     isHost = false,
     updateAvailable = false,
     onupdate,
+    onsettings,
   }: {
     view: PlayerView;
     onleave: () => void;
@@ -22,6 +23,7 @@
     /** A new app version is waiting: a dot on the menu button online, an Update chip offline. */
     updateAvailable?: boolean;
     onupdate?: () => void;
+    onsettings?: () => void;
   } = $props();
   const myTeam = $derived(teamOf(view.seat));
 
@@ -64,7 +66,20 @@
     {:else if updateAvailable}
       <button class="btn secondary update" onclick={onupdate}>Update</button>
     {/if}
-    <button class="btn secondary leave" class:alone={!roomCode} onclick={onleave}>Leave</button>
+    {#if onsettings}
+      <button class="btn secondary gear" class:first={!roomCode && !updateAvailable} aria-label="Settings" onclick={onsettings}>
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path
+            d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7.4-2.5a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3.5h-4l-.3 2.5a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 1.7 1l.3 2.5h4l.3-2.5a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    {/if}
+    <button class="btn secondary leave" class:alone={!roomCode && !onsettings} onclick={onleave}>Leave</button>
   </div>
   <div class="scores">
     {#each [0, 1] as const as team}
@@ -148,6 +163,18 @@
   }
   .update + .leave.alone {
     margin-left: 0;
+  }
+  .gear {
+    min-height: 36px;
+    width: 36px;
+    min-width: 36px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+  }
+  /* With no Share or Update button, Settings starts the right-hand group. */
+  .gear.first {
+    margin-left: auto;
   }
   .share {
     display: inline-flex;

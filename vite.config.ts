@@ -37,7 +37,7 @@ export default defineConfig(({ mode }) => ({
       },
       workbox: {
         // Precache everything so the game works fully offline after the first load.
-        globPatterns: ['**/*.{js,css,html,png,svg,webmanifest}'],
+        globPatterns: ['**/*.{js,css,html,png,svg,webmanifest,woff2}'],
       },
     }),
   ],

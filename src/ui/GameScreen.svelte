@@ -14,7 +14,8 @@
   import SetSummary from './SetSummary.svelte';
   import TrumpPicker from './TrumpPicker.svelte';
   import HalloweenJoker from './seasonal/HalloweenJoker.svelte';
-  import { isHalloweenWeek } from '../seasonal/halloween';
+  import SettingsSheet from './SettingsSheet.svelte';
+  import { isHalloweenSeason } from '../seasonal/halloween';
   import { TEAM_NAME } from './labels';
   import { DEAL_FLIGHT_MS, DEAL_STEP_MS, ROUND_LINGER_MS, dealDurationMs } from './timing';
 
@@ -46,8 +47,9 @@
   let coverFor = $state<Seat | null>(null);
   let toast = $state<string | null>(null);
   let lastSeq = -1;
-  /** Halloween week: the Joker was just played, so the haunted portrait is on screen. */
+  /** Halloween season: the Joker was just played, so the haunted portrait is on screen. */
   let jokerScare = $state<{ key: number; player: string } | null>(null);
+  let settingsOpen = $state(false);
   let roomOpen = $state(false);
   let guestMenuOpen = $state(false);
   /** Host only: a player asked for a pause and is waiting for an answer. */
@@ -115,7 +117,7 @@
       const text = describe(e);
       if (text) showToast(text);
       // Every player's device sees the same public event, so everyone gets the animation.
-      if (!firstView && e.type === 'CARD_PLAYED' && e.card === JOKER && isHalloweenWeek()) {
+      if (!firstView && e.type === 'CARD_PLAYED' && e.card === JOKER && isHalloweenSeason()) {
         jokerScare = { key: e.seq, player: whoPlayed(e.seat) };
       }
     }
@@ -261,6 +263,7 @@
       {updateAvailable}
       {onupdate}
       onshare={() => (online?.isHost ? (roomOpen = true) : (guestMenuOpen = true))}
+      onsettings={() => (settingsOpen = true)}
     />
 
     <main class="table" aria-label="Table">
@@ -438,6 +441,10 @@
       <span>Pass the device to <b>{names[coverFor]}</b> ({TEAM_NAME[teamOf(coverFor)]})</span>
       <span class="small">Tap when ready</span>
     </button>
+  {/if}
+
+  {#if settingsOpen}
+    <SettingsSheet onclose={() => (settingsOpen = false)} />
   {/if}
 
   {#if jokerScare}

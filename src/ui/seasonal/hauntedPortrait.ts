@@ -1,11 +1,11 @@
 // @ts-nocheck -- ported pixel-art animation code; the exported function below is typed.
 //
 // "The Portrait of Giggles Mortimer": a haunted clown portrait that tears open and laughs.
-// Played over the table when the Joker is played during Halloween week. Everything is drawn
+// Played over the table when the Joker is played during Halloween season. Everything is drawn
 // by hand into a 144x192 canvas (scaled up with crisp pixels) and the sound is synthesized
 // with the Web Audio API, so there are no image or sound files to load.
 
-import { audioContext } from '../audio';
+import { sfxContext } from '../audio.svelte';
 
 /** Overall loudness of the laugh and sting (0..1). */
 const VOLUME = .7;
@@ -430,7 +430,7 @@ function ha(a,bus,t,pitch,dur,vol){
   o.start(t); vib.start(t); h.start(t); o.stop(t+dur+.05); vib.stop(t+dur+.05);
 }
 function scheduleSound(){
-  const a=audioContext(); if(!a) return; const bus=echoBus(a), t0=a.currentTime+.02;
+  const a=sfxContext(); if(!a) return; const bus=echoBus(a), t0=a.currentTime+.02;
   creak(a,bus,t0+.72);
   sting(a,bus,t0+T_TEAR);
   for(const e of EVENTS){ ha(a,bus,t0+e.t,e.p,e.d,1); ha(a,bus,t0+e.t+.015,e.p/2,e.d,.8); }

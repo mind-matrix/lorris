@@ -10,6 +10,7 @@
   import HowToPlay from './HowToPlay.svelte';
   import { APP_VERSION_LABEL } from '../pwa/version';
   import { formatRoomCode } from '../net/roomCode';
+  import { season } from './season.svelte';
 
   let {
     onstart,
@@ -25,6 +26,7 @@
     onsavedgames,
     message = null,
     onchecknow,
+    onsettings,
   }: {
     onstart: (setup: GameSetup) => void;
     onhost: () => void;
@@ -45,6 +47,7 @@
     message?: string | null;
     /** "Check for updates" in About. Resolves to whether the check reached the server. */
     onchecknow: () => Promise<boolean>;
+    onsettings: () => void;
   } = $props();
   let checkStatus = $state<string | null>(null);
 
@@ -58,7 +61,19 @@
 </script>
 
 <main class="start">
-  <h1>Lorris</h1>
+  <button class="btn secondary settings" aria-label="Settings" onclick={onsettings}>
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+      <path
+        d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7.4-2.5a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.4 7.4 0 0 0-1.7-1L15 3.5h-4l-.3 2.5a7.4 7.4 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7.4 7.4 0 0 0 1.7 1l.3 2.5h4l.3-2.5a7.4 7.4 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6Z"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.8"
+        stroke-linejoin="round"
+      />
+    </svg>
+  </button>
+  <h1 class:spooky={season.halloween}>Lorris</h1>
+  {#if season.halloween}<p class="season" aria-hidden="true">🎃 Happy Halloween 🦇</p>{/if}
   <p class="tag">The game of big promises and bigger comebacks</p>
 
   {#if message}<p class="message" role="alert">{message}</p>{/if}
@@ -146,6 +161,7 @@
 
 <style>
   .start {
+    position: relative;
     max-width: 420px;
     margin: 0 auto;
     /* Extra room at the bottom so the "Update available" banner never hides anything. */
@@ -159,6 +175,59 @@
     margin: 8px 0 0;
     font-size: 2.6rem;
     letter-spacing: 0.05em;
+  }
+  .settings {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    padding: 0;
+    width: 44px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+  }
+  /* Halloween season: the name written in dripping blood, with a slow candlelit flicker. */
+  h1.spooky {
+    margin-top: 28px;
+    font-family: 'Lorris Blood', 'Creepster', fantasy;
+    font-weight: 400;
+    font-size: clamp(2.6rem, 13vw, 3.6rem);
+    letter-spacing: 0.04em;
+    line-height: 1.25;
+    color: #c4111d;
+    background: linear-gradient(180deg, #ff2a2a 0%, #b30b16 55%, #5e0209 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 2px 0 #2a0005) drop-shadow(0 0 14px rgba(255, 30, 30, 0.35));
+    animation: flicker 6s ease-in-out infinite;
+  }
+  .season {
+    margin: -6px 0 0;
+    color: var(--accent);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  @keyframes flicker {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    47% {
+      opacity: 1;
+    }
+    48% {
+      opacity: 0.72;
+    }
+    50% {
+      opacity: 1;
+    }
+    52% {
+      opacity: 0.85;
+    }
+    54% {
+      opacity: 1;
+    }
   }
   h2 {
     margin: 8px 0 -6px;

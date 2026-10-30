@@ -131,7 +131,7 @@ describe('BotRunner: Halloween Joker pause', () => {
     return new BotRunner(host, () => bot, pacing, () => now);
   }
 
-  it('during Halloween week, bots wait for the animation after the Joker', async () => {
+  it('during Halloween season, bots wait for the animation after the Joker', async () => {
     const host = hostWithJokerJustPlayed();
     const v0 = host.version;
     const runner = runnerAt(host, HALLOWEEN, { ...PACING, halloweenJoker: 5900 });
@@ -143,7 +143,7 @@ describe('BotRunner: Halloween Joker pause', () => {
     runner.close();
   });
 
-  it('outside Halloween week, or with no pause configured, the usual delay applies', async () => {
+  it('outside Halloween season, or with no pause configured, the usual delay applies', async () => {
     for (const [now, pacing] of [
       [NOVEMBER, { ...PACING, halloweenJoker: 5900 }],
       [HALLOWEEN, PACING],

@@ -3,7 +3,7 @@ import { setupServiceWorker } from './pwa/register';
 import { setInGameBotFactory } from './ai';
 import { WorkerBot } from './ai/worker/WorkerBot';
 import App from './ui/App.svelte';
-import { installAudioUnlock } from './ui/audio';
+import { installAudioUnlock } from './ui/audio.svelte';
 import './ui/theme.css';
 
 // Cache the app for offline use; new versions are offered with an "Update available" banner.

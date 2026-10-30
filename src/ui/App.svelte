@@ -1,5 +1,11 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
+  import SettingsSheet from './SettingsSheet.svelte';
+  import HalloweenDecor from './seasonal/HalloweenDecor.svelte';
+  import { HalloweenMusic } from './seasonal/halloweenMusic';
+  import { audioContext, audioState } from './audio.svelte';
+  import { settings } from './settings.svelte';
+  import { applySeason, season, watchSeason } from './season.svelte';
   import { makeConfig } from '../core';
   import { createInGameBot, type Bot } from '../ai';
   import { roomCodeFromHash } from '../net/roomCode';
@@ -35,6 +41,33 @@
     | { kind: 'game'; session: GameSession; online: OnlineSession | null; stopSaving?: () => void; autosaver?: Autosaver };
 
   let screen = $state<Screen>({ kind: 'menu' });
+  let settingsOpen = $state(false);
+
+  // Seasonal theme: follow the date, and put the theme on the page.
+  onMount(() => watchSeason());
+  $effect(() => applySeason(season.halloween));
+
+  // Halloween-season music: plays once sound is unlocked (the first tap), while the app is on
+  // screen and Music is on in Settings. Quieter during a game, so it never covers the table.
+  const MUSIC_LEVEL_IN_GAME = 0.45;
+  let music: HalloweenMusic | null = null;
+  $effect(() => {
+    const wanted = season.halloween && settings.music && audioState.unlocked && audioState.visible;
+    const level = screen.kind === 'game' ? MUSIC_LEVEL_IN_GAME : 1;
+    if (!wanted) {
+      music?.stop();
+      music = null;
+      return;
+    }
+    if (!music) {
+      const ctx = audioContext();
+      if (!ctx) return;
+      music = new HalloweenMusic(ctx);
+      music.setLevel(level);
+      music.start();
+    } else music.setLevel(level);
+  });
+  onDestroy(() => music?.stop());
   let busy = $state(false);
   let setupError = $state<string | null>(null);
   let menuMessage = $state<string | null>(null);
@@ -327,7 +360,11 @@
     onsavedgames={() => (screen = { kind: 'saves' })}
     message={menuMessage}
     onchecknow={checkForUpdate}
+    onsettings={() => (settingsOpen = true)}
   />
+  {#if settingsOpen}
+    <SettingsSheet onclose={() => (settingsOpen = false)} />
+  {/if}
   {#if fullFor}
     <SavesFullDialog
       {saves}
@@ -339,6 +376,11 @@
       oncancel={() => (fullFor = null)}
     />
   {/if}
+{/if}
+
+<!-- Halloween scenery behind the menus (not over the table, where it would distract). -->
+{#if season.halloween && screen.kind !== 'game'}
+  <HalloweenDecor />
 {/if}
 
 <!-- The full banner only where nobody is mid-game: the start screen, saved games, and setup. -->

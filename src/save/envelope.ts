@@ -7,7 +7,8 @@ import { sha256 } from './sha256';
 import { gameStateProblem } from './validateState';
 
 export const SAVE_FORMAT = 'lorris-save';
-export const SAVE_FORMAT_VERSION = 1;
+/** 2: the deal generator's state became four words (sfc32) instead of one number. */
+export const SAVE_FORMAT_VERSION = 2;
 /** Oldest format we can still migrate. */
 export const MIN_SAVE_FORMAT_VERSION = 0;
 

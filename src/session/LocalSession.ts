@@ -1,4 +1,4 @@
-import type { Action, GameConfig, GameState, PlayerView, Seat } from '../core';
+import type { Action, GameConfig, GameState, PlayerView, Seat, Seed } from '../core';
 import type { Bot } from '../ai';
 import { BotRunner, DEFAULT_PACING, type BotPacing } from './BotRunner';
 import { GameHost } from './GameHost';
@@ -6,7 +6,7 @@ import type { GameSession, SessionError, TableInfo } from './types';
 
 export { DEFAULT_PACING, type BotPacing };
 
-export type LocalStart = { config: GameConfig; seed: number } | { snapshot: { state: GameState; version: number } };
+export type LocalStart = { config: GameConfig; seed: Seed } | { snapshot: { state: GameState; version: number } };
 
 /**
  * Offline play: an in-process host, bots for some seats, and humans for the rest.

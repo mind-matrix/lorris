@@ -1,11 +1,12 @@
 // Turns a player's view plus one sampled deal into a full state the search can simulate.
 // Only ever built from the view (public info + own hand) and sampled cards: never real hands.
 
-import { legalCards, teamOf, trickWinner, type Action, type Card, type GameState, type PlayerView, type Seat } from '../../core';
+import { legalCards, seedState, teamOf, trickWinner, type Action, type Card, type GameState, type PlayerView, type Seat } from '../../core';
 
 export function stateFromView(view: PlayerView, hands: Card[][], rngSeed: number): GameState {
   const { seat: _seat, myHand: _mine, handCounts: _counts, ...pub } = view;
-  return { ...pub, hands, rng: rngSeed };
+  // Only matters if the simulation re-deals (a misdeal or a new Set inside the search).
+  return { ...pub, hands, rng: seedState(rngSeed) };
 }
 
 export const actionKey = (a: Action): string =>

@@ -1,5 +1,7 @@
 // Core types for Lorris. Everything here is plain, JSON-safe data.
 
+import type { RngState } from './rng';
+
 export const SUITS = ['S', 'H', 'D', 'C'] as const;
 export type Suit = (typeof SUITS)[number];
 
@@ -116,7 +118,8 @@ export interface PublicState {
 /** Full authoritative state. Only the host ever holds this. */
 export interface GameState extends PublicState {
   /** Seeded RNG state. Stored here so applyAction stays a pure function. */
-  rng: number;
+  /** Host-only: the deal generator's state (sfc32). Never sent to players. */
+  rng: RngState;
   hands: Card[][];
 }
 

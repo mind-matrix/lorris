@@ -6,7 +6,7 @@
   import { audioContext, audioState } from './audio.svelte';
   import { settings } from './settings.svelte';
   import { applySeason, season, watchSeason } from './season.svelte';
-  import { makeConfig } from '../core';
+  import { makeConfig, randomSeed } from '../core';
   import { createInGameBot, type Bot } from '../ai';
   import { roomCodeFromHash } from '../net/roomCode';
   import { DEFAULT_PACING, LocalSession } from '../session/LocalSession';
@@ -38,7 +38,7 @@
     | { kind: 'saves' }
     | { kind: 'setup'; mode: 'host' | 'join'; code: string | null }
     | { kind: 'lobby'; session: OnlineSession }
-    | { kind: 'game'; session: GameSession; online: OnlineSession | null; stopSaving?: () => void; autosaver?: Autosaver };
+    | { kind: 'game'; session: GameSession; online: OnlineSession | null; stopSaving?: () => void; autosaver?: Autosaver; saveId?: string };
 
   let screen = $state<Screen>({ kind: 'menu' });
   let settingsOpen = $state(false);
@@ -142,11 +142,12 @@
     // Humans take the first seats, so a lone human sits at seat 0; bots fill the rest.
     const bots: (Bot | null)[] = Array.from({ length: playerCount }, (_, seat) => (seat < humans ? null : createInGameBot()));
     const names = bots.map((bot, seat) => (bot ? `Bot ${seat + 1}` : humans === 1 ? 'You' : `Player ${seat + 1}`));
-    const seed = crypto.getRandomValues(new Uint32Array(1))[0];
+    const seed = randomSeed(); // 128 bits from the platform's cryptographic generator
     const session = new LocalSession({ config: makeConfig(playerCount), seed }, bots, names, pacingFor(playerCount));
     // Autosave after every move, so closing the app (or a crash) loses nothing.
-    const saving = withSaving ? autosaveOffline(saveStore, newSaveId(), session) : null;
-    screen = { kind: 'game', session, online: null, stopSaving: saving?.stop, autosaver: saving?.autosaver };
+    const saveId = newSaveId();
+    const saving = withSaving ? autosaveOffline(saveStore, saveId, session) : null;
+    screen = { kind: 'game', session, online: null, stopSaving: saving?.stop, autosaver: saving?.autosaver, saveId: saving ? saveId : undefined };
   }
 
   /** Returns an error message to show, or null once the game is open. */
@@ -155,7 +156,7 @@
     if (!loaded.ok) return loaded.error.message;
     const session = restoreOffline(loaded.save, pacingFor(loaded.save.game.state.config.playerCount));
     const { stop, autosaver } = autosaveOffline(saveStore, id, session);
-    screen = { kind: 'game', session, online: null, stopSaving: stop, autosaver };
+    screen = { kind: 'game', session, online: null, stopSaving: stop, autosaver, saveId: id };
     return null;
   }
 
@@ -288,6 +289,54 @@
     screen = { kind: 'menu' };
     setTimeout(() => void refresh(), 400);
   }
+
+  /** Offline: the game is saved after every move, so keep that save and exit. Host: also tell everyone. */
+  async function saveAndExit() {
+    if (screen.kind !== 'game') return;
+    if (screen.online) {
+      if (screen.online.isHost) await (screen.online as OnlineSession & HostControls).saveAndClose();
+    } else {
+      screen.stopSaving?.();
+      await screen.autosaver?.flush();
+      screen.session.close();
+    }
+    screen = { kind: 'menu' };
+    void refresh();
+  }
+
+  /** Exit and forget the saved game (online, the host ending it does this). */
+  async function exitWithoutSaving() {
+    if (screen.kind !== 'game') return;
+    if (screen.online) return leaveGame();
+    const { saveId, autosaver } = screen;
+    screen.stopSaving?.();
+    screen.session.close();
+    screen = { kind: 'menu' };
+    await autosaver?.flush();
+    if (saveId) await saveStore.delete(saveId);
+    void refresh();
+  }
+
+  /** Leave offers to save only where this device keeps the game: offline (if saving) or as the host. */
+  const leaveChoice = $derived(
+    screen.kind !== 'game'
+      ? null
+      : screen.online
+        ? screen.online.isHost
+          ? {
+              message: 'Save and exit: everyone is told you can resume the game later. Exit without saving: the game ends for everyone.',
+              onsave: saveAndExit,
+              ondiscard: exitWithoutSaving,
+            }
+          : null
+        : screen.saveId
+          ? {
+              message: 'Save and exit to resume this game later from the start screen, or exit without saving to discard it.',
+              onsave: saveAndExit,
+              ondiscard: exitWithoutSaving,
+            }
+          : null,
+  );
 </script>
 
 {#if screen.kind === 'game'}
@@ -295,13 +344,8 @@
     <GameScreen
       session={screen.session}
       onexit={leaveGame}
-      leaveQuestion={screen.online
-        ? screen.online.isHost
-          ? 'End the game for everyone? (To keep it, pause and choose "Save and close room".)'
-          : 'Leave? A bot will take your seat.'
-        : screen.stopSaving
-          ? 'Leave this game? It is saved, so you can resume it later.'
-          : 'Leave this game? It is not saved.'}
+      {leaveChoice}
+      leaveQuestion={screen.online ? 'Leave? A bot will take your seat.' : 'Leave this game? It is not saved.'}
       online={screen.online}
       updateAvailable={pwaState.updateAvailable}
       onupdate={updateNow}

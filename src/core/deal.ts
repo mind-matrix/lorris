@@ -1,12 +1,15 @@
 import { buildDeck } from './cards';
 import { nextSeat } from './config';
-import { randomInt, shuffle } from './rng';
+import { randomInt, seedState, shuffle, type Seed } from './rng';
 import { pushEvent } from './state';
 import type { Card, GameConfig, GameState } from './types';
 
-/** Creates a new game and deals the first set. The first dealer is chosen by the seeded RNG. */
-export function createGame(config: GameConfig, seed: number): GameState {
-  const [dealer, rng] = randomInt(seed >>> 0, config.playerCount);
+/**
+ * Creates a new game and deals the first set. The first dealer is chosen by the seeded RNG.
+ * Real games pass a 128-bit seed from `randomSeed()`; tests and tools may pass a number.
+ */
+export function createGame(config: GameConfig, seed: Seed): GameState {
+  const [dealer, rng] = randomInt(seedState(seed), config.playerCount);
   const state: GameState = {
     config,
     rng,

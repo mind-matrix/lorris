@@ -2,8 +2,9 @@
 
 import { DEFAULT_POLICY } from '../net/lobby';
 import { roomPassword } from '../net/roomCode';
-import { checksumOf, createEnvelope, loadEnvelope, type LoadResult, type SavedSeat, type SaveEnvelope } from './envelope';
+import { SAVE_FORMAT_VERSION, checksumOf, createEnvelope, loadEnvelope, type LoadResult, type SavedSeat, type SaveEnvelope } from './envelope';
 import { hashToken } from './sha256';
+import { seedState } from '../core';
 
 type Raw = Record<string, unknown>;
 
@@ -39,11 +40,22 @@ const MIGRATIONS: Record<number, (save: Raw) => Raw> = {
     });
     return e as unknown as Raw;
   },
+  /**
+   * Format 1: the deal generator was mulberry32, with one 32-bit number of state. It's now
+   * sfc32 with four words. The old number seeds the new generator (deterministically), so a
+   * resumed game carries on with fresh, fair deals for its remaining Sets.
+   */
+  1: (old) => {
+    const game = old.game as { state: Record<string, unknown>; version: number };
+    const rng = game.state.rng;
+    if (typeof rng !== 'number' || !Number.isInteger(rng)) throw new Error('Format 1 save without a numeric rng');
+    return { ...old, formatVersion: 2, game: { ...game, state: { ...game.state, rng: [...seedState(rng)] } } };
+  },
 };
 
 export function migrate(save: Raw, from: number): Raw {
   let s = save;
-  for (let v = from; v < 1; v++) s = MIGRATIONS[v](s);
+  for (let v = from; v < SAVE_FORMAT_VERSION; v++) s = MIGRATIONS[v](s);
   // Re-stamp the checksum after migrating (formats that already had one keep theirs valid).
   return { ...s, checksum: checksumOf(s as unknown as SaveEnvelope) };
 }

@@ -81,9 +81,12 @@ describe('online play over the in-memory network', () => {
     expect(table!.seats[1].status).toBe('connected');
     clientDriver = autoplay(client, 1);
     await vi.advanceTimersByTimeAsync(1_000);
+    // Let the game settle before comparing: stop playing the host's seat, so play soon waits on
+    // it and no message is still in flight. Then the client must hold exactly its real hand.
+    hostDriver.stop();
+    await vi.advanceTimersByTimeAsync(3_000);
     const state = game.sent.at(-1)!.state as GameState;
     expect(clientDriver.latest()!.myHand).toEqual(state.hands[1]);
-    hostDriver.stop();
     clientDriver.stop();
     assertNoLeaks(game.sent);
   });

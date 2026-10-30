@@ -2,7 +2,7 @@
 // add latency, drop messages, stall a peer silently, or disconnect it abruptly. Messages are
 // JSON round-tripped, exactly like a real wire, and delivered in order per pair of peers.
 
-import { nextRandom } from '../core';
+import { mulberry32 } from '../core';
 import { Emitter, type PeerId, type Transport, type TransportError } from './transport';
 
 export interface NetworkTapEvent {
@@ -104,7 +104,7 @@ export class InMemoryNetwork {
     let dropped = this.stalled.has(from) || this.stalled.has(to) || !this.connected(roomId, from, to);
     if (!dropped && this.dropRate > 0) {
       let r: number;
-      [r, this.rng] = nextRandom(this.rng);
+      [r, this.rng] = mulberry32(this.rng);
       dropped = r < this.dropRate;
     }
     this.tap?.({ from, to, message, dropped });

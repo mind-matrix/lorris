@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HeuristicBot, type Bot } from '../ai';
-import type { Action, PlayerView } from '../core';
+import { createGame, makeConfig, type Action, type PlayerView } from '../core';
 import type { LobbySnapshot, TableInfo } from '../session/types';
 import type { TableEvent } from './protocol';
 import { assertNoLeaks, autoplay, hostSnapshot, newClient, setupGame, until, TEST_NET } from './testHarness';
@@ -77,9 +77,13 @@ describe('joining a game in progress', () => {
 
   it("taking a seat while its bot is thinking cancels the bot's move; the human plays it", async () => {
     const bots = new Map<number, SlowBot>();
+    // Nobody plays the host's seat here, so pick a deal where a bot acts first.
+    let seed = 1;
+    while (createGame(makeConfig(4), seed).turn === 0) seed++;
     const game = await setupGame({
       players: 4,
       clients: 0,
+      seed,
       makeBot: (seat) => {
         const b = new SlowBot();
         bots.set(seat, b);

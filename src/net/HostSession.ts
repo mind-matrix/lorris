@@ -2,7 +2,7 @@
 // ever get their own player view; every action they send is validated by the rules engine.
 
 import { IN_GAME_BOT, createInGameBot, type Bot } from '../ai';
-import type { Action, GameConfig, GameState, PlayerView, Seat } from '../core';
+import { randomSeed, type Action, type GameConfig, type GameState, type PlayerView, type Seat, type Seed } from '../core';
 import { BotRunner, DEFAULT_PACING, type BotPacing } from '../session/BotRunner';
 import { GameHost } from '../session/GameHost';
 import { createEnvelope, type SaveEnvelope, type SavedSeat } from '../save/envelope';
@@ -73,7 +73,8 @@ export interface HostOptions {
   hostName?: string;
   /** Resume a saved game (validated) instead of starting a new room. */
   saved?: SaveEnvelope;
-  seed?: number;
+  /** Tests pass a fixed seed; real games get 128 bits from crypto. */
+  seed?: Seed;
   pacing?: BotPacing;
   net?: NetConfig;
   makeBot?: (seat: Seat) => Bot;
@@ -100,7 +101,7 @@ export class HostSession implements OnlineSession, HostControls {
   private pacing: BotPacing;
   private makeBot: (seat: Seat) => Bot;
   private onSendHook: HostOptions['onSend'];
-  private seed: number;
+  private seed: Seed;
 
   private lobby: Lobby;
   private lobbyVersion: number;
@@ -135,7 +136,7 @@ export class HostSession implements OnlineSession, HostControls {
     this.pacing = opts.pacing ?? DEFAULT_PACING;
     this.makeBot = opts.makeBot ?? (() => createInGameBot());
     this.onSendHook = opts.onSend;
-    this.seed = opts.seed ?? crypto.getRandomValues(new Uint32Array(1))[0];
+    this.seed = opts.seed ?? randomSeed();
 
     this.lobby = opts.saved ? HostSession.lobbyFromSave(opts.saved) : createLobby(opts.config!, opts.hostName!, newToken());
     this.lobbyVersion = opts.saved ? (opts.saved.online?.lobbyVersion ?? 0) + 1 : 1;

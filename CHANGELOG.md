@@ -17,6 +17,23 @@
 - Settings, from the gear button on the home page and in games: Sound effects (on/off) and Music (on/off), saved
   on the device.
 
+### Changed
+- Card dealing now uses the sfc32 random generator (128 bits of state, passes the standard PractRand and
+  TestU01 BigCrush test batteries) instead of Mulberry32 (32 bits), seeded with 128 bits from the platform's
+  cryptographic generator. Random picks are now exactly uniform (rejection sampling instead of rounding).
+  Investigation found no bias in the old dealing; this removes a theoretical weakness and prepares for
+  provable fairness in online games.
+- Save format 2: older saves are migrated automatically and continue with fair deals.
+- Leaving a game you can save (an offline game, or one you host, with or without other people) now asks
+  "Save and exit" or "Exit without saving" instead of always saving. Hosts who save tell everyone the game can
+  be resumed later; exiting without saving discards the saved game (and, when hosting, ends it for everyone).
+
+### Added (tests)
+- A permanent statistical fairness test on 7,200 simulated Sets per table size: no link between a seat's hands
+  from one Set to the next, the strongest hand moving seats at the rate chance predicts, equal Joker share and
+  hand strength for every seat, and every card equally likely in every position.
+- Known-answer tests for sfc32 and SplitMix32 against a reference C implementation.
+
 ## v0.0.1
 
 ### Added

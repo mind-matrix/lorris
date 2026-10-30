@@ -1,13 +1,13 @@
-import { nextRandom } from '../../core';
+import { mulberry32 } from '../../core';
 
-/** A small seeded RNG (mulberry32 from core) with the helpers the search needs. Deterministic. */
+/** A small seeded RNG (mulberry32) with the helpers the search needs. Deterministic. */
 export class Rng {
   constructor(private state: number) {
     this.state = state >>> 0;
   }
   /** [0, 1) */
   next(): number {
-    const [r, s] = nextRandom(this.state);
+    const [r, s] = mulberry32(this.state);
     this.state = s;
     return r;
   }

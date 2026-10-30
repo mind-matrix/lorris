@@ -15,6 +15,7 @@
   import TrumpPicker from './TrumpPicker.svelte';
   import HalloweenJoker from './seasonal/HalloweenJoker.svelte';
   import SettingsSheet from './SettingsSheet.svelte';
+  import LeaveDialog from './LeaveDialog.svelte';
   import { isHalloweenSeason } from '../seasonal/halloween';
   import { TEAM_NAME } from './labels';
   import { DEAL_FLIGHT_MS, DEAL_STEP_MS, ROUND_LINGER_MS, dealDurationMs } from './timing';
@@ -23,6 +24,7 @@
     session,
     onexit,
     leaveQuestion = 'Leave this game?',
+    leaveChoice = null,
     online = null,
     updateAvailable = false,
     onupdate,
@@ -30,6 +32,8 @@
     session: GameSession;
     onexit: () => void;
     leaveQuestion?: string;
+    /** When this device can save the game: Leave asks to save and exit, or exit without saving. */
+    leaveChoice?: { message: string; onsave: () => Promise<void> | void; ondiscard: () => void } | null;
     /** Set for online games, for reconnect/wait controls. */
     online?: OnlineSession | null;
     /** A new app version is waiting: shown quietly in the menu, never over the table. */
@@ -52,6 +56,7 @@
   let settingsOpen = $state(false);
   let roomOpen = $state(false);
   let guestMenuOpen = $state(false);
+  let leaveOpen = $state(false);
   /** Host only: a player asked for a pause and is waiting for an answer. */
   let pauseRequest = $state<{ seat: Seat; name: string } | null>(null);
   const paused = $derived(table?.pause?.paused ?? false);
@@ -147,7 +152,9 @@
   }
 
   function leave() {
-    if (view?.phase === 'gameOver' || confirm(leaveQuestion)) onexit();
+    if (view?.phase === 'gameOver') onexit();
+    else if (leaveChoice) leaveOpen = true;
+    else if (confirm(leaveQuestion)) onexit();
   }
 
   async function act(action: Action) {
@@ -451,6 +458,15 @@
     {#key jokerScare.key}
       <HalloweenJoker player={jokerScare.player} onclose={() => (jokerScare = null)} />
     {/key}
+  {/if}
+
+  {#if leaveOpen && leaveChoice}
+    <LeaveDialog
+      message={leaveChoice.message}
+      onsave={leaveChoice.onsave}
+      ondiscard={leaveChoice.ondiscard}
+      oncancel={() => (leaveOpen = false)}
+    />
   {/if}
 {/if}
 

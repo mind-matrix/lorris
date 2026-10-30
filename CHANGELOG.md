@@ -24,6 +24,9 @@
   Investigation found no bias in the old dealing; this removes a theoretical weakness and prepares for
   provable fairness in online games.
 - Save format 2: older saves are migrated automatically and continue with fair deals.
+- Leaving a game you can save (an offline game, or one you host, with or without other people) now asks
+  "Save and exit" or "Exit without saving" instead of always saving. Hosts who save tell everyone the game can
+  be resumed later; exiting without saving discards the saved game (and, when hosting, ends it for everyone).
 
 ### Added (tests)
 - A permanent statistical fairness test on 7,200 simulated Sets per table size: no link between a seat's hands

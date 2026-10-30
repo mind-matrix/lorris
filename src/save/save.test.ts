@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { HeuristicBot, runGame } from '../ai';
-import { applyAction, createGame, makeConfig, type Action, type GameState, type Seat } from '../core';
+import { applyAction, createGame, isRngState, makeConfig, seedState, type Action, type GameState, type Seat } from '../core';
 import { MemoryStore, type BatchOp } from '../session/storage';
 import { canonicalJson } from './canonical';
-import { SAVE_FORMAT_VERSION, createEnvelope, newSaveId, type SaveEnvelope, type SavedSeat } from './envelope';
+import { SAVE_FORMAT_VERSION, checksumOf, createEnvelope, newSaveId, type SaveEnvelope, type SavedSeat } from './envelope';
 import { loadSave } from './migrations';
 import { autosaveOffline, offlineEnvelope, restoreOffline } from './offline';
 import { Autosaver, MAX_SAVES, SaveLimitError, SaveStore } from './SaveStore';
 import { hashToken, sha256 } from './sha256';
 import { LocalSession } from '../session/LocalSession';
+import { GameHost } from '../session/GameHost';
 import { IsmctsBot, setInGameBotFactory } from '../ai';
 
 // The real in-game bot, iteration-capped so tests stay quick and deterministic.
@@ -62,7 +63,7 @@ describe('save round trips', () => {
       expect(loaded.ok).toBe(true);
       if (!loaded.ok) return;
       expect(loaded.save.game.state).toEqual(run.state);
-      expect(loaded.save.game.state.rng).toBe(run.state.rng);
+      expect(loaded.save.game.state.rng).toEqual(run.state.rng);
       expect(loaded.save.label.text).toMatch(/Asha \+ \d bots/);
     });
 
@@ -164,8 +165,35 @@ describe('crash safety', () => {
 });
 
 describe('validation and migration', () => {
+  it('migrates a format-1 save (one-number generator state) and the game plays on', async () => {
+    const run = await partialGame(4, 30);
+    const v1 = { ...envelopeFor({ ...run.state, rng: 987654321 } as unknown as GameState), formatVersion: 1 } as Record<string, unknown>;
+    v1.checksum = checksumOf(v1 as unknown as SaveEnvelope);
+    const loaded = loadSave(JSON.stringify(v1));
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    expect(loaded.migrated).toBe(true);
+    expect(loaded.save.formatVersion).toBe(SAVE_FORMAT_VERSION);
+    // Same game, with the old number seeding the new generator: deterministic, and valid.
+    expect(loaded.save.game.state).toEqual({ ...run.state, rng: [...seedState(987654321)] });
+    expect(isRngState(loaded.save.game.state.rng)).toBe(true);
+    // The game continues to the end, dealing new Sets from the migrated generator.
+    const host = new GameHost({ state: loaded.save.game.state, version: loaded.save.game.version });
+    for (let i = 0; i < 3000 && host.turn !== null; i++) host.submit(host.turn, host.legalActions(host.turn)[0]);
+    expect(host.turn).toBe(null);
+  });
+
+  it('refuses a format-1 save whose generator state is damaged', async () => {
+    const run = await partialGame(4, 30);
+    const v1 = { ...envelopeFor({ ...run.state, rng: 'oops' } as unknown as GameState), formatVersion: 1 } as Record<string, unknown>;
+    v1.checksum = checksumOf(v1 as unknown as SaveEnvelope);
+    expect(loadSave(JSON.stringify(v1)).ok).toBe(false);
+  });
+
   it('migrates a hand-made format-0 save (the Phase 2 hosted game record)', async () => {
-    const state = (await partialGame(4, 30)).state;
+    // Saves from that time used the old one-number generator state.
+    const current = (await partialGame(4, 30)).state;
+    const state = { ...current, rng: 123456789 } as unknown as GameState;
     const legacy = {
       roomCode: 'ABCDEF',
       lobbyVersion: 7,
@@ -190,7 +218,7 @@ describe('validation and migration', () => {
     expect(loaded.save.online).toMatchObject({ roomCode: 'ABCDEF', hostName: 'Asha', lobbyVersion: 7 });
     expect(loaded.save.seats[1]).toEqual({ name: 'Ben', kind: 'human', tokenHash: hashToken('ben-token-bbbbbbbbbbbbbb') });
     expect(JSON.stringify(loaded.save)).not.toContain('ben-token'); // tokens are only kept hashed
-    expect(loaded.save.game.state).toEqual(state);
+    expect(loaded.save.game.state).toEqual({ ...current, rng: [...seedState(123456789)] });
     // The migrated save is a valid current-format save in its own right.
     expect(loadSave(JSON.stringify(loaded.save)).ok).toBe(true);
   });

@@ -1,4 +1,4 @@
-import { randomInt, type Action, type PlayerView } from '../core';
+import { mulberry32, type Action, type PlayerView } from '../core';
 import type { Bot } from './bot';
 
 /** Picks any legal action uniformly at random, using its own seeded RNG. */
@@ -11,8 +11,8 @@ export class RandomBot implements Bot {
   }
 
   async chooseAction(_view: PlayerView, legal: Action[]): Promise<Action> {
-    let i: number;
-    [i, this.rng] = randomInt(this.rng, legal.length);
-    return legal[i];
+    const [r, next] = mulberry32(this.rng);
+    this.rng = next;
+    return legal[Math.floor(r * legal.length)];
   }
 }

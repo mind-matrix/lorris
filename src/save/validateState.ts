@@ -1,7 +1,7 @@
 // Checks that a loaded GameState is internally consistent before we trust it. A save that fails
 // any of this is corrupt or was edited, and is refused rather than crashing the game later.
 
-import { SUITS, SUPPORTED_PLAYER_COUNTS, buildDeck, makeConfig, type GameState } from '../core';
+import { SUITS, SUPPORTED_PLAYER_COUNTS, buildDeck, isRngState, makeConfig, type GameState } from '../core';
 
 const PHASES = ['bidding', 'choosingTrump', 'playing', 'setOver', 'gameOver'];
 const isInt = (x: unknown, min = -Infinity, max = Infinity) => typeof x === 'number' && Number.isInteger(x) && x >= min && x <= max;
@@ -17,7 +17,7 @@ export function gameStateProblem(s: unknown): string | null {
     if (st.config[k] !== expected[k]) return `bad config.${k}`;
   }
   const n = st.config.playerCount;
-  if (!isInt(st.rng, 0, 2 ** 32 - 1)) return 'bad rng';
+  if (!isRngState(st.rng)) return 'bad rng';
   if (!PHASES.includes(st.phase)) return 'bad phase';
   if (!isInt(st.setNumber, 1)) return 'bad set number';
   for (const k of ['dealer', 'cutter'] as const) if (!isInt(st[k], 0, n - 1)) return `bad ${k}`;

@@ -48,7 +48,7 @@ describe('ISMCTS bot', () => {
         const others = s.hands.flatMap((h, seat) => (seat === me ? [] : h)).reverse();
         let k = 0;
         const hands = s.hands.map((h, seat) => (seat === me ? h : h.map(() => others[k++])));
-        const altered: GameState = { ...s, hands, rng: (s.rng ^ 0x5bd1e995) >>> 0 };
+        const altered: GameState = { ...s, hands, rng: [s.rng[0] ^ 0x5bd1e995, s.rng[1], s.rng[2], s.rng[3]].map((w) => w >>> 0) as unknown as GameState['rng'] };
         expect(altered.hands).not.toEqual(s.hands);
         const view1 = getPlayerView(s, me);
         const view2 = getPlayerView(altered, me);

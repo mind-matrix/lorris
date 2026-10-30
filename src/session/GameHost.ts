@@ -9,6 +9,7 @@ import {
   type PlayerView,
   type RuleError,
   type Seat,
+  type Seed,
 } from '../core';
 
 type Listener = (view: PlayerView) => void;
@@ -24,9 +25,9 @@ export class GameHost {
   private listeners = new Map<Seat, Set<Listener>>();
   private changeListeners = new Set<() => void>();
 
-  constructor(config: GameConfig, seed: number);
+  constructor(config: GameConfig, seed: Seed);
   constructor(snapshot: { state: GameState; version: number });
-  constructor(a: GameConfig | { state: GameState; version: number }, seed?: number) {
+  constructor(a: GameConfig | { state: GameState; version: number }, seed?: Seed) {
     if ('state' in a) {
       this.state = a.state;
       this.stateVersion = a.version;

@@ -6,7 +6,7 @@
   import { audioContext, audioState } from './audio.svelte';
   import { settings } from './settings.svelte';
   import { applySeason, season, watchSeason } from './season.svelte';
-  import { makeConfig } from '../core';
+  import { makeConfig, randomSeed } from '../core';
   import { createInGameBot, type Bot } from '../ai';
   import { roomCodeFromHash } from '../net/roomCode';
   import { DEFAULT_PACING, LocalSession } from '../session/LocalSession';
@@ -142,7 +142,7 @@
     // Humans take the first seats, so a lone human sits at seat 0; bots fill the rest.
     const bots: (Bot | null)[] = Array.from({ length: playerCount }, (_, seat) => (seat < humans ? null : createInGameBot()));
     const names = bots.map((bot, seat) => (bot ? `Bot ${seat + 1}` : humans === 1 ? 'You' : `Player ${seat + 1}`));
-    const seed = crypto.getRandomValues(new Uint32Array(1))[0];
+    const seed = randomSeed(); // 128 bits from the platform's cryptographic generator
     const session = new LocalSession({ config: makeConfig(playerCount), seed }, bots, names, pacingFor(playerCount));
     // Autosave after every move, so closing the app (or a crash) loses nothing.
     const saving = withSaving ? autosaveOffline(saveStore, newSaveId(), session) : null;

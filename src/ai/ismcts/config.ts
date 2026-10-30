@@ -15,10 +15,16 @@ export const SEARCH_CONFIG = {
   /** UCB1 exploration constant (rewards are in [0, 1]). */
   exploration: 0.7,
   /**
-   * Reward shape: a Set's result is scored as the chance of winning the match,
-   * sigmoid(k * (points the opponents still need - points we still need)).
+   * Reward shape: a Set's result is scored as the chance of winning the match, modelled as a race:
+   * sigmoid(k * lead / sqrt(points both teams still need)). The same lead is worth more near 32.
    */
-  rewardSteepness: 0.12,
+  rewardSteepness: 0.9,
+  /**
+   * Weight of our own progress toward the target score, blended into the reward. Without it the
+   * win chance saturates when one team is far behind (e.g. opponents at -200), every move looks
+   * equally good, and the bot stops playing to reach 32.
+   */
+  progressWeight: 0.15,
 };
 
 /** How strongly calls and the trump choice tilt where hidden cards are dealt in samples. */

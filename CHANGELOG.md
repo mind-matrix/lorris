@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Halloween week (October 25–31, India time, every year): playing the Joker shows "The Portrait of Giggles Mortimer",
+  a haunted clown portrait that tears open and laughs, to every player at the table. Tap to skip. With reduced
+  motion, a still frame shows instead. Bots wait for the animation before their next move.
+- Sound effects unlock on the player's first tap, as browsers require.
+
 ## v0.0.1
 
 ### Added

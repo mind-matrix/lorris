@@ -6,8 +6,12 @@
 //
 // Options: --a/--b bot ids, --suite <name>, --players 4,6, --quick | --full, --sets N, --games N,
 //          --jobs N (default: cores - 1), --seed S
+//
+// Every result is appended to tournament-results/<time>.jsonl as it arrives, so a long run can be
+// inspected partway:  npm run tournament -- --report tournament-results/<file>.jsonl
 
 import { Worker, isMainThread, parentPort } from 'node:worker_threads';
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -55,6 +59,19 @@ if (!isMainThread) {
       return acc;
     }, []),
   );
+  if (args.report) {
+    // Re-summarize saved results (also works on a run that's still going).
+    const results = readFileSync(args.report, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const { mod, server } = await load();
+    const keys = [...new Set(results.map((r) => `${r.a}|${r.b}|${r.players}`))];
+    for (const key of keys) {
+      const mine = results.filter((r) => `${r.a}|${r.b}|${r.players}` === key);
+      console.log(mod.formatReport(mod.summarize(mine.filter((r) => 'margin' in r), mine.filter((r) => 'aWins' in r))));
+    }
+    console.log(`\n${results.length} results from ${args.report}`);
+    await server.close();
+    process.exit(0);
+  }
   const full = !!args.full;
   const sets = Number(args.sets ?? (full ? 3000 : 300));
   const games = Number(args.games ?? (full ? 300 : 20));
@@ -80,6 +97,9 @@ if (!isMainThread) {
 
   const results = [];
   const started = Date.now();
+  mkdirSync('tournament-results', { recursive: true });
+  const logFile = `tournament-results/${new Date(started).toISOString().replace(/[:.]/g, '-')}.jsonl`;
+  console.log(`Saving results to ${logFile}`);
   let next = 0;
   let done = 0;
   let lastLog = 0;
@@ -93,6 +113,7 @@ if (!isMainThread) {
         if (m.ready) return feed();
         if (!m.ok) return reject(new Error(`Task ${JSON.stringify(m.task)} failed:\n${m.error}`));
         results.push(m.record);
+        appendFileSync(logFile, JSON.stringify(m.record) + '\n');
         done++;
         if (Date.now() - lastLog > 5000) {
           lastLog = Date.now();

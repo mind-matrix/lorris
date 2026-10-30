@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getLegalActions, makeConfig, type Action, type PlayerView } from '../core';
+import { JOKER, getLegalActions, makeConfig, type Action, type PlayerView } from '../core';
 import type { Bot } from '../ai';
 import { BotRunner, type BotPacing } from './BotRunner';
 import { GameHost } from './GameHost';
@@ -101,5 +101,60 @@ describe('BotRunner: thinking during the delay', () => {
     expect(bot.started).toEqual([]);
     expect(getLegalActions(host.snapshot().state, host.turn!).length).toBeGreaterThan(0);
     runner.close();
+  });
+});
+
+describe('BotRunner: Halloween Joker pause', () => {
+  const HALLOWEEN = new Date('2026-10-30T12:00:00Z');
+  const NOVEMBER = new Date('2026-11-10T12:00:00Z');
+
+  /** Bids and picks trump with the first legal actions, then plays until the Joker has just been played. */
+  function hostWithJokerJustPlayed() {
+    for (let seed = 1; seed < 500; seed++) {
+      const host = new GameHost(makeConfig(4), seed);
+      for (let steps = 0; steps < 200 && host.turn !== null; steps++) {
+        const seat = host.turn;
+        const legal = host.legalActions(seat);
+        const joker = legal.find((a) => a.type === 'PLAY_CARD' && a.card === JOKER);
+        host.submit(seat, joker ?? legal[0]);
+        if (joker) {
+          if (host.view(host.turn ?? 0).phase === 'playing') return host;
+          break; // the Joker ended the set: try another deal for a plain mid-round case
+        }
+      }
+    }
+    throw new Error('no deal with a playable Joker found');
+  }
+
+  function runnerAt(host: GameHost, now: Date, pacing: BotPacing) {
+    const bot = new TimedBot(0);
+    return new BotRunner(host, () => bot, pacing, () => now);
+  }
+
+  it('during Halloween week, bots wait for the animation after the Joker', async () => {
+    const host = hostWithJokerJustPlayed();
+    const v0 = host.version;
+    const runner = runnerAt(host, HALLOWEEN, { ...PACING, halloweenJoker: 5900 });
+    runner.schedule();
+    await vi.advanceTimersByTimeAsync(5899);
+    expect(host.version).toBe(v0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(host.version).toBe(v0 + 1);
+    runner.close();
+  });
+
+  it('outside Halloween week, or with no pause configured, the usual delay applies', async () => {
+    for (const [now, pacing] of [
+      [NOVEMBER, { ...PACING, halloweenJoker: 5900 }],
+      [HALLOWEEN, PACING],
+    ] as const) {
+      const host = hostWithJokerJustPlayed();
+      const v0 = host.version;
+      const runner = runnerAt(host, now, pacing);
+      runner.schedule();
+      await vi.advanceTimersByTimeAsync(PACING.play);
+      expect(host.version).toBe(v0 + 1);
+      runner.close();
+    }
   });
 });

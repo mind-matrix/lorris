@@ -1,6 +1,7 @@
 import type { Bot } from '../ai';
 import type { GameEvent, PlayerView, Seat } from '../core';
 import type { GameHost } from './GameHost';
+import { HALLOWEEN_JOKER_PAUSE_MS, isHalloweenWeek, jokerJustPlayed } from '../seasonal/halloween';
 
 /** How long bots wait before acting, so humans can follow along. */
 export interface BotPacing {
@@ -12,9 +13,21 @@ export interface BotPacing {
   nextSet: number;
   /** Pause after cards are dealt (covers the UI's deal animation) before the first call. */
   afterDeal: number;
+  /**
+   * Pause after the Joker is played during Halloween week, while every player watches the
+   * Joker animation. Omitted or 0: no extra pause.
+   */
+  halloweenJoker?: number;
 }
 
-export const DEFAULT_PACING: BotPacing = { bid: 700, play: 650, afterRound: 1100, nextSet: 4500, afterDeal: 1800 };
+export const DEFAULT_PACING: BotPacing = {
+  bid: 700,
+  play: 650,
+  afterRound: 1100,
+  nextSet: 4500,
+  afterDeal: 1800,
+  halloweenJoker: HALLOWEEN_JOKER_PAUSE_MS,
+};
 
 /** Bots that can abandon a search in progress (e.g. the Web Worker bot). Optional. */
 interface Cancellable {
@@ -45,6 +58,8 @@ export class BotRunner {
     private host: GameHost,
     private botFor: (seat: Seat) => Bot | null,
     private pacing: BotPacing = DEFAULT_PACING,
+    /** The current time, for the Halloween check (replaceable in tests). */
+    private now: () => Date = () => new Date(),
   ) {
     this.unsubscribe = host.onChange(() => this.schedule());
   }
@@ -104,6 +119,14 @@ export class BotRunner {
   }
 
   private delayFor(view: PlayerView): number {
+    const base = this.baseDelay(view);
+    // Halloween week: hold off while everyone watches the Joker animation.
+    const joker = this.pacing.halloweenJoker ?? 0;
+    if (joker > 0 && jokerJustPlayed(view.log) && isHalloweenWeek(this.now())) return Math.max(base, joker);
+    return base;
+  }
+
+  private baseDelay(view: PlayerView): number {
     const last: GameEvent | undefined = view.log.at(-1);
     if (view.phase === 'setOver') return this.pacing.nextSet;
     if (view.phase === 'bidding' || view.phase === 'choosingTrump') {

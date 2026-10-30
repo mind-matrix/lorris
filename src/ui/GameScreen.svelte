@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { getLegalActionsFromView, teamOf, type Action, type GameEvent, type PlayerView, type Seat } from '../core';
+  import { JOKER, getLegalActionsFromView, teamOf, type Action, type GameEvent, type PlayerView, type Seat } from '../core';
   import type { GameSession, HostControls, LobbySnapshot, OnlineSession, TableInfo } from '../session/types';
   import RoomSheet from './RoomSheet.svelte';
   import PauseOverlay from './PauseOverlay.svelte';
@@ -13,6 +13,8 @@
   import SeatBadge from './SeatBadge.svelte';
   import SetSummary from './SetSummary.svelte';
   import TrumpPicker from './TrumpPicker.svelte';
+  import HalloweenJoker from './seasonal/HalloweenJoker.svelte';
+  import { isHalloweenWeek } from '../seasonal/halloween';
   import { TEAM_NAME } from './labels';
   import { DEAL_FLIGHT_MS, DEAL_STEP_MS, ROUND_LINGER_MS, dealDurationMs } from './timing';
 
@@ -44,6 +46,8 @@
   let coverFor = $state<Seat | null>(null);
   let toast = $state<string | null>(null);
   let lastSeq = -1;
+  /** Halloween week: the Joker was just played, so the haunted portrait is on screen. */
+  let jokerScare = $state<{ key: number; player: string } | null>(null);
   let roomOpen = $state(false);
   let guestMenuOpen = $state(false);
   /** Host only: a player asked for a pause and is waiting for an answer. */
@@ -103,12 +107,24 @@
 
   /** Shows public events that nothing else on screen explains (misdeals, forced calls) as a short toast. */
   function onEvents(v: PlayerView) {
+    // The first view (opening, resuming or rejoining a game) holds past events: no animations for those.
+    const firstView = lastSeq === -1;
     const fresh = v.log.filter((e) => e.seq > lastSeq);
     if (v.log.length) lastSeq = v.log[v.log.length - 1].seq;
     for (const e of fresh) {
       const text = describe(e);
       if (text) showToast(text);
+      // Every player's device sees the same public event, so everyone gets the animation.
+      if (!firstView && e.type === 'CARD_PLAYED' && e.card === JOKER && isHalloweenWeek()) {
+        jokerScare = { key: e.seq, player: whoPlayed(e.seat) };
+      }
     }
+  }
+
+  /** "You" when this device has a single player and it's them; otherwise their name. */
+  function whoPlayed(seat: Seat): string {
+    if (session.seats.length === 1 && session.seats[0] === seat) return 'You';
+    return names[seat] ?? 'Someone';
   }
 
   function describe(e: GameEvent): string | null {
@@ -422,6 +438,12 @@
       <span>Pass the device to <b>{names[coverFor]}</b> ({TEAM_NAME[teamOf(coverFor)]})</span>
       <span class="small">Tap when ready</span>
     </button>
+  {/if}
+
+  {#if jokerScare}
+    {#key jokerScare.key}
+      <HalloweenJoker player={jokerScare.player} onclose={() => (jokerScare = null)} />
+    {/key}
   {/if}
 {/if}
 

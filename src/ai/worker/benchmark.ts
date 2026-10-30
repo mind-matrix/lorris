@@ -68,3 +68,28 @@ export async function benchmark(players: number, sets = 2): Promise<BenchResult>
     mainThreadMaxBlockMs: Math.max(0, maxBlock),
   };
 }
+
+/**
+ * Search speed on the page's own thread (Chrome's CPU throttling applies here, but not to
+ * workers), to estimate a slow phone. Returns iterations per second.
+ */
+export async function searchRate(players: number, iterations = 1500): Promise<number> {
+  const { IsmctsBot } = await import('../ismcts/IsmctsBot');
+  let s = createGame(makeConfig(players), 91);
+  const human = new HeuristicBot();
+  let total = 0;
+  let ms = 0;
+  for (let i = 0; i < 12 && s.phase !== 'setOver'; i++) {
+    const seat = s.turn!;
+    const legal = getLegalActions(s, seat);
+    if (legal.length > 1) {
+      const r = new IsmctsBot(i, { budget: { deterministic: true, maxIterations: iterations } }).decide(getPlayerView(s, seat), legal);
+      total += r.iterations;
+      ms += r.ms;
+    }
+    const r = applyAction(s, seat, legal.length > 1 ? await human.chooseAction(getPlayerView(s, seat), legal) : legal[0]);
+    if (!r.ok) throw new Error(r.error.message);
+    s = r.state;
+  }
+  return (total / ms) * 1000;
+}

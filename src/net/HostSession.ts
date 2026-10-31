@@ -7,7 +7,9 @@ import { BotRunner, DEFAULT_PACING, type BotPacing } from '../session/BotRunner'
 import { GameHost } from '../session/GameHost';
 import { createEnvelope, type SaveEnvelope, type SavedSeat } from '../save/envelope';
 import { Autosaver, type SaveStore } from '../save/SaveStore';
-import type { HostControls, LobbySnapshot, OnlineSession, SessionError, TableInfo } from '../session/types';
+import type { HostControls, LobbySnapshot, OnlineSession, SessionError, TableInfo, VoiceMessaging } from '../session/types';
+import { VoiceRateLimiter, forwardedMeta, parseOutgoing, type ReceivedClip, type VoiceClip } from './voiceMessages';
+import type { LinkStats } from './transport';
 import { NET_CONFIG, type NetConfig } from './config';
 import {
   DEFAULT_POLICY,
@@ -123,6 +125,8 @@ export class HostSession implements OnlineSession, HostControls {
   private tableListeners = new Set<(t: TableInfo) => void>();
   private lobbyListeners = new Set<(l: LobbySnapshot) => void>();
   private eventListeners = new Set<(e: TableEvent) => void>();
+  private clipListeners = new Set<(clip: ReceivedClip) => void>();
+  private clipLimits = new Map<PeerId | 'host', VoiceRateLimiter>();
   private unsubscribers: (() => void)[] = [];
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private closed = false;
@@ -172,6 +176,7 @@ export class HostSession implements OnlineSession, HostControls {
       t.onPeerJoin((peer) => this.peerState(peer)),
       t.onPeerLeave((peer) => this.onPeerLeave(peer)),
     );
+    if (t.voice) this.unsubscribers.push(t.voice.onClip((from, data, meta) => this.onClip(from, data, meta)));
     await t.connect(this.roomCode, roomPassword(this.roomCode));
     this.heartbeat = setInterval(() => this.tick(), this.net.heartbeatIntervalMs);
     this.changed({ lobby: true });
@@ -195,6 +200,60 @@ export class HostSession implements OnlineSession, HostControls {
   subscribeEvents(listener: (e: TableEvent) => void): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
+  }
+
+  // ---------- Voice messages ----------
+
+  voiceMessages(): VoiceMessaging | null {
+    const link = this.transport.voice;
+    if (!link) return null;
+    return {
+      send: (clip) => {
+        if (!parseOutgoing(clip.data, { v: 1, mime: clip.mime, durationMs: clip.durationMs })) return false;
+        if (!this.clipLimiter('host').allow(Date.now())) return false;
+        link.sendClip(clip.data, forwardedMeta(clip, HOST_SEAT), this.seatedPeers());
+        return true;
+      },
+      subscribe: (listener) => {
+        this.clipListeners.add(listener);
+        return () => this.clipListeners.delete(listener);
+      },
+      linkStats: async () => {
+        // The host talks to everyone: typical round trip, and the weakest outgoing link.
+        const all = (await Promise.all(this.seatedPeers().map((p) => link.linkStats(p)))).filter((s): s is LinkStats => s !== null);
+        if (all.length === 0) return null;
+        const rtts = all.map((s) => s.rttMs).filter((r): r is number => r !== null).sort((a, b) => a - b);
+        const outs = all.map((s) => s.outgoingKbps).filter((k): k is number => k !== null);
+        return { rttMs: rtts.length ? rtts[Math.floor(rtts.length / 2)] : null, outgoingKbps: outs.length ? Math.min(...outs) : null };
+      },
+    };
+  }
+
+  /** Peers currently seated and connected (they hear voice messages). */
+  private seatedPeers(except?: PeerId): PeerId[] {
+    const out: PeerId[] = [];
+    for (const [seat, peer] of this.seatPeer) {
+      const p = this.peers.get(peer);
+      if (peer !== except && p && !p.blocked && p.seat === seat && this.lobby.seats[seat]?.kind === 'human') out.push(peer);
+    }
+    return out;
+  }
+
+  private clipLimiter(key: PeerId | 'host'): VoiceRateLimiter {
+    let l = this.clipLimits.get(key);
+    if (!l) this.clipLimits.set(key, (l = new VoiceRateLimiter()));
+    return l;
+  }
+
+  /** A player's voice message: check it, stamp it with their seat, pass it to everyone else. */
+  private onClip(from: PeerId, data: ArrayBuffer, meta: unknown): void {
+    const p = this.peers.get(from);
+    const seat = p?.seat ?? null;
+    if (!p || p.blocked || seat === null || this.seatPeer.get(seat) !== from || this.lobby.seats[seat]?.kind !== 'human') return;
+    const clip = parseOutgoing(data, meta);
+    if (!clip || !this.clipLimiter(from).allow(Date.now())) return;
+    this.transport.voice?.sendClip(clip.data, forwardedMeta(clip, seat), this.seatedPeers(from));
+    for (const l of this.clipListeners) l({ ...clip, seat });
   }
 
   subscribeLobby(listener: (l: LobbySnapshot) => void): () => void {

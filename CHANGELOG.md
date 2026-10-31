@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- Voice messages in online games: a round mic button at the right of the controls. Hold it to record and
+  release to send, or tap to start and tap again to send (up to 15 seconds). Messages go through the host to
+  everyone at the table (no team-only messages, in keeping with the no-table-talk rule) and play one at a time,
+  with the speaker's seat glowing. Nothing is sent while nobody is recording, and a message costs about 2 KB per
+  second of speech, through the TURN relay only when a network needs it. The microphone is only open around
+  recording. The button greys out when the network is too slow, measured in the background from the device's
+  own network information and connection statistics, without sending anything.
 - Halloween season, every year from October 18 to November 7 (India time): the week of Halloween plus a week
   either side.
   - The whole app switches to a Halloween theme: a candlelit purple table, pumpkin-orange accents, and a moon,

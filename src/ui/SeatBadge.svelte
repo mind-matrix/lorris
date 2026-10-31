@@ -12,6 +12,7 @@
     called,
     isMe,
     status = 'connected',
+    voice = 'none',
   }: {
     name: string;
     seat: Seat;
@@ -23,12 +24,15 @@
     isMe: boolean;
     /** Online only: is this seat's player here, reconnecting, or covered by a bot? */
     status?: 'connected' | 'reconnecting' | 'bot-controlled';
+    /** Online voice chat: not in voice, in voice, or talking right now. */
+    voice?: 'none' | 'in' | 'speaking';
   } = $props();
 </script>
 
-<div class="seat team-{teamOf(seat)}" class:turn={isTurn} class:me={isMe}>
+<div class="seat team-{teamOf(seat)}" class:turn={isTurn} class:me={isMe} class:speaking={voice === 'speaking'}>
   <div class="name">
     {name}
+    {#if voice !== 'none'}<span class="mic" title={voice === 'speaking' ? 'Talking' : 'In voice chat'} aria-label={voice === 'speaking' ? 'talking' : 'in voice chat'}>🎙</span>{/if}
     {#if isDealer}<span class="chip" title="Dealer">D</span>{/if}
   </div>
   {#if !isMe}
@@ -50,6 +54,18 @@
 </div>
 
 <style>
+  .mic {
+    font-size: 0.75rem;
+    opacity: 0.75;
+  }
+  .seat.speaking {
+    box-shadow:
+      0 0 0 2px var(--good),
+      0 0 12px var(--good);
+  }
+  .seat.speaking .mic {
+    opacity: 1;
+  }
   .seat {
     --card-w: 22px;
     display: flex;

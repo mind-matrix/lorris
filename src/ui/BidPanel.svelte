@@ -18,15 +18,29 @@
 </div>
 
 <style>
+  .panel {
+    width: 100%;
+  }
   .panel p {
     margin: 0 0 6px;
     text-align: center;
     font-weight: 600;
   }
+  /* One row that always fits: the number buttons share the space (narrow phones, or room
+     left for the mic button) instead of pushing Pass onto a second line. */
   .row {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     justify-content: center;
-    gap: 8px;
+    gap: 6px;
+  }
+  .row .btn {
+    flex: 0 1 44px;
+    min-width: 0;
+    padding-inline: 0;
+  }
+  .row .btn.secondary {
+    flex: 0 0 auto;
+    padding-inline: 12px;
   }
 </style>

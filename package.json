@@ -2,6 +2,8 @@
   "name": "lorris",
   "private": true,
   "version": "0.0.1",
+  "author": "Sagnik Modak",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "start": "vite",

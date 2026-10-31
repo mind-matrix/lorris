@@ -4,7 +4,7 @@
 import { joinRoom, selfId, type Room } from 'trystero';
 import { NET_CONFIG } from './config';
 import { getIceServers, invalidateIceServers } from './iceServers';
-import { Emitter, type PeerId, type Transport, type TransportError } from './transport';
+import { Emitter, type LinkStats, type PeerId, type Transport, type TransportError, type VoiceLink } from './transport';
 
 export class TrysteroTransport implements Transport {
   readonly selfId: PeerId = selfId;
@@ -16,6 +16,43 @@ export class TrysteroTransport implements Transport {
   private errors = new Emitter<[TransportError]>();
   /** Bumped by every connect() and disconnect(), so a connect() still waiting can tell it's stale. */
   private attempt = 0;
+  private sendClipRaw: ((data: ArrayBuffer, options: { target: string | string[]; metadata: never }) => Promise<void>) | null = null;
+  private clips = new Emitter<[PeerId, ArrayBuffer, unknown]>();
+
+  readonly voice: VoiceLink = {
+    sendClip: (data, meta, to) => {
+      this.sendClipRaw?.(data, { target: to, metadata: meta as never }).catch(() => {});
+    },
+    onClip: (handler) => this.clips.add(handler),
+    linkStats: (peer) => this.linkStats(peer),
+  };
+
+  /** Reads the active connection's stats (local only: no network traffic). */
+  private async linkStats(peer: PeerId): Promise<LinkStats | null> {
+    const pc = this.room?.getPeers()[peer];
+    if (!pc) return null;
+    try {
+      const report = await pc.getStats();
+      let pair: RTCIceCandidatePairStats | null = null;
+      report.forEach((s) => {
+        if (s.type === 'transport' && s.selectedCandidatePairId) pair = report.get(s.selectedCandidatePairId) ?? pair;
+      });
+      // Some browsers have no transport stats: fall back to the nominated, succeeded pair.
+      if (!pair) {
+        report.forEach((s) => {
+          if (s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) pair = s;
+        });
+      }
+      const p = pair as RTCIceCandidatePairStats | null;
+      if (!p) return null;
+      return {
+        rttMs: typeof p.currentRoundTripTime === 'number' ? p.currentRoundTripTime * 1000 : null,
+        outgoingKbps: typeof p.availableOutgoingBitrate === 'number' ? p.availableOutgoingBitrate / 1000 : null,
+      };
+    } catch {
+      return null;
+    }
+  }
 
   async connect(roomId: string, password: string): Promise<void> {
     this.disconnect();
@@ -46,6 +83,13 @@ export class TrysteroTransport implements Transport {
     // One action carries every protocol message; the protocol layer tells them apart.
     const action = room.makeAction('lorris');
     action.onMessage = (data, { peerId }) => this.messages.emit(peerId, data);
+    // Voice messages: binary clips on their own channel, with JSON metadata.
+    const voiceAction = room.makeAction('voice');
+    voiceAction.onMessage = (data, { peerId, metadata }) => {
+      const bytes = toArrayBuffer(data);
+      if (bytes) this.clips.emit(peerId, bytes, metadata);
+    };
+    this.sendClipRaw = voiceAction.send as never;
     room.onPeerJoin = (peer) => this.joins.emit(peer);
     room.onPeerLeave = (peer) => this.leaves.emit(peer);
     this.room = room;
@@ -81,5 +125,12 @@ export class TrysteroTransport implements Transport {
     this.room?.leave().catch(() => {});
     this.room = null;
     this.sendRaw = null;
+    this.sendClipRaw = null;
   }
+}
+
+function toArrayBuffer(data: unknown): ArrayBuffer | null {
+  if (data instanceof ArrayBuffer) return data;
+  if (ArrayBuffer.isView(data)) return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+  return null;
 }

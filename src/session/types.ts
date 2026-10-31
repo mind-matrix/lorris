@@ -1,5 +1,7 @@
 import type { Action, PlayerView, Seat } from '../core';
 import type { JoinPolicy, PauseState, SeatInfo, TableEvent, TableSummary } from '../net/protocol';
+import type { LinkStats } from '../net/transport';
+import type { ReceivedClip, VoiceClip } from '../net/voiceMessages';
 
 /** Connection state of this device, shown in the UI. Local games are always 'local'. */
 export type ConnectionState =
@@ -83,6 +85,18 @@ export interface OnlineSession extends GameSession {
   requestPause?(): void;
   /** Table-wide happenings, like someone taking over a bot seat. */
   subscribeEvents(listener: (event: TableEvent) => void): () => void;
+  /** Voice messages, or null when the connection can't carry them. */
+  voiceMessages(): VoiceMessaging | null;
+}
+
+/** Voice messages for one player: sending clips to the table, hearing everyone else's. */
+export interface VoiceMessaging {
+  /** Sends a clip to everyone else at the table. False if refused (too long, too often...). */
+  send(clip: VoiceClip): boolean;
+  /** Clips from everyone else at the table. */
+  subscribe(listener: (clip: ReceivedClip) => void): () => void;
+  /** This device's connection to the table, read locally (sends nothing). */
+  linkStats(): Promise<LinkStats | null>;
 }
 
 /** Extra controls only the host has. */

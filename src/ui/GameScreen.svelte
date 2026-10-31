@@ -16,6 +16,12 @@
   import HalloweenJoker from './seasonal/HalloweenJoker.svelte';
   import SettingsSheet from './SettingsSheet.svelte';
   import LeaveDialog from './LeaveDialog.svelte';
+  import MicButton from './MicButton.svelte';
+  import { VoiceRecorder, recordingSupported } from './voiceRecorder';
+  import { ClipPlayer } from './voicePlayback';
+  import { NetworkQuality } from '../net/networkQuality';
+  import { sampleNetwork } from './networkSample';
+  import type { VoiceMessaging } from '../session/types';
   import { isHalloweenSeason } from '../seasonal/halloween';
   import { TEAM_NAME } from './labels';
   import { DEAL_FLIGHT_MS, DEAL_STEP_MS, ROUND_LINGER_MS, dealDurationMs } from './timing';
@@ -54,6 +60,142 @@
   /** Halloween season: the Joker was just played, so the haunted portrait is on screen. */
   let jokerScare = $state<{ key: number; player: string } | null>(null);
   let settingsOpen = $state(false);
+
+  // ---------- Voice messages (online games) ----------
+  // The round mic button: hold to record and release to send, or tap to start and tap to send.
+  // Clips go to the host, which passes them to everyone else at the table. The microphone is
+  // off except while recording, and the button greys out while the network is too slow.
+  let messaging: VoiceMessaging | null = null;
+  let recorder: VoiceRecorder | null = null;
+  let micVisible = $state(false);
+  let micRecording = $state(false);
+  let micLatched = $state(false);
+  let micElapsed = $state(0);
+  let micBlocked = $state(false);
+  let micReset = $state(0);
+  let netSlow = $state(false);
+  /** Whose voice message is playing. */
+  let speakingSeat = $state<Seat | null>(null);
+  let recordTimer: ReturnType<typeof setInterval> | null = null;
+  let toldAboutTableTalk = false;
+
+  $effect(() => {
+    const vm = online?.voiceMessages();
+    if (!vm) return;
+    messaging = vm;
+    // Everyone hears messages; recording needs browser support.
+    const player = new ClipPlayer(
+      (seat) => (speakingSeat = seat),
+      (seat) => showToast(`Couldn't play ${names[seat] ?? 'a'} voice message on this device.`),
+    );
+    const offClips = vm.subscribe((clip) => player.enqueue(clip));
+    const quality = new NetworkQuality(() => sampleNetwork(vm));
+    const offQuality = quality.subscribe((slow) => (netSlow = slow));
+    const onVisibility = () => (document.visibilityState === 'hidden' ? quality.stop() : quality.start());
+    document.addEventListener('visibilitychange', onVisibility);
+    quality.start();
+    if (recordingSupported()) {
+      recorder = new VoiceRecorder();
+      micVisible = true;
+    }
+    return () => {
+      offClips();
+      offQuality();
+      quality.stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+      player.stop();
+      recorder?.dispose();
+      recorder = null;
+      messaging = null;
+      micVisible = false;
+      stopRecordTimer();
+    };
+  });
+
+  function stopRecordTimer() {
+    if (recordTimer) clearInterval(recordTimer);
+    recordTimer = null;
+  }
+
+  async function micStart(latched: boolean) {
+    const rec = recorder;
+    if (!rec) return;
+    if (latched) {
+      micLatched = true; // a tap: keep recording until the next tap
+      return;
+    }
+    if (rec.permission !== 'granted') {
+      // First press: just ask for the microphone. Recording starts with the next press.
+      micReset++;
+      const p = await rec.requestMic();
+      micBlocked = p === 'denied';
+      showToast(p === 'granted' ? 'Microphone ready. Hold the mic to talk, or tap to start and tap to send.' : 'No microphone access, so you can hear others but not send voice messages.');
+      return;
+    }
+    micRecording = true;
+    micLatched = false;
+    micElapsed = 0;
+    const startedAt = performance.now();
+    recordTimer = setInterval(() => (micElapsed = performance.now() - startedAt), 250);
+    const ok = await rec.start(() => {
+      showToast('Voice messages can be up to 15 seconds. Sent.');
+      void micStop();
+    });
+    if (!ok) {
+      micRecording = false;
+      micBlocked = true;
+      stopRecordTimer();
+      micReset++;
+      showToast('No microphone access, so you can hear others but not send voice messages.');
+    }
+  }
+
+  async function micStop() {
+    if (!micRecording || !recorder) return;
+    micRecording = false;
+    micLatched = false;
+    stopRecordTimer();
+    const result = await recorder.stop();
+    if (!result) return;
+    if ('tooShort' in result) {
+      showToast('Too short to send. Hold the mic a little longer.');
+      return;
+    }
+    if (!messaging?.send(result.clip)) {
+      showToast("Couldn't send that one. Wait a moment between voice messages.");
+      return;
+    }
+    if (!toldAboutTableTalk) {
+      toldAboutTableTalk = true;
+      showToast('Sent to the whole table. No talking about your cards!');
+    }
+  }
+
+  function micAbort() {
+    micRecording = false;
+    micLatched = false;
+    stopRecordTimer();
+    void recorder?.cancel();
+  }
+
+  async function micUnavailable() {
+    if (micBlocked && recorder) {
+      // Maybe they've allowed the microphone in settings since.
+      if ((await recorder.requestMic()) === 'granted') {
+        micBlocked = false;
+        showToast('Microphone ready. Hold the mic to talk, or tap to start and tap to send.');
+      } else showToast("Microphone access is blocked. Allow it in your browser's site settings to send voice messages.");
+      return;
+    }
+    if (netSlow) showToast('Your connection is slow right now, so voice messages are paused.');
+  }
+
+  /** A seat's voice indicator: glowing while their message plays (or while you record). */
+  function voiceOf(seat: Seat): 'none' | 'speaking' {
+    if (seat === speakingSeat) return 'speaking';
+    if (seat === activeSeat && micRecording) return 'speaking';
+    return 'none';
+  }
   let roomOpen = $state(false);
   let guestMenuOpen = $state(false);
   let leaveOpen = $state(false);
@@ -287,6 +429,7 @@
             called={view.phase !== 'bidding' && view.contract?.seat === seat ? view.contract.value : null}
             isMe={seat === activeSeat}
             status={table?.seats[seat]?.kind === 'human' || table?.seats[seat]?.kind === 'reserved' ? table.seats[seat].status : 'connected'}
+            voice={voiceOf(seat)}
           />
         </div>
       {/each}
@@ -357,7 +500,7 @@
       {/if}
     </main>
 
-    <section class="controls" aria-live="polite">
+    <section class="controls" class:with-mic={micVisible} aria-live="polite">
       {#if dealing}
         <p class="status">{status}</p>
       {:else if paused}
@@ -368,6 +511,22 @@
         <TrumpPicker onpick={(suit) => act({ type: 'CHOOSE_TRUMP', suit })} />
       {:else}
         <p class="status">{status}</p>
+      {/if}
+      {#if micVisible}
+        <div class="mic-slot">
+          <MicButton
+            recording={micRecording}
+            latched={micLatched}
+            elapsedMs={micElapsed}
+            slow={netSlow}
+            blocked={micBlocked}
+            resetToken={micReset}
+            onstart={micStart}
+            onstop={micStop}
+            onabort={micAbort}
+            onunavailable={micUnavailable}
+          />
+        </div>
       {/if}
     </section>
 
@@ -539,12 +698,23 @@
   }
   /* Fixed height (fits the call panel) so switching between panels and status never shifts the layout. */
   .controls {
+    position: relative;
     height: 84px;
     padding: 0 10px;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
+  }
+  /* Room for the round mic button on the far right. */
+  .controls.with-mic {
+    padding-right: 66px;
+  }
+  .mic-slot {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
   }
   .status {
     margin: 0;

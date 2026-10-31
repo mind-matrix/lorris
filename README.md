@@ -197,7 +197,8 @@ See the [open issues](https://github.com/mind-matrix/lorris/issues) for proposed
 
 ## License
 
-See `LICENSE.txt` for more information.
+See `LICENSE.txt` for more information. Third-party components (Tabler Icons, MIT; the Halloween title font, SIL OFL) are listed in
+`THIRD-PARTY-NOTICES.md`.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

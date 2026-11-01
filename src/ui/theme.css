@@ -5,12 +5,18 @@
   --muted: #5d5d66;
   --panel: #ffffff;
   --line: #d6d2c8;
-  --felt: #1b6e48;
-  --felt-light: #258a5c;
-  --felt-edge: #5a3d22;
+  --felt: #17633f;
+  --felt-light: #2a9a66;
+  --felt-edge: #6b4524;
+  /* The light catching the top of the board's wooden rim. */
+  --felt-edge-light: #9a6a3c;
   --accent: #f2b632;
   --team-a: #f08a4b;
   --team-b: #5aa9e6;
+  /* Text on a team-colored fill (score boxes, seats): dark on both team colors, in every theme. */
+  --team-ink: #17191c;
+  /* The trump indicator: a gold frame that stands out from everything else in the top bar. */
+  --trump-gold: #e2a412;
   --good: #1f8a4c;
   --bad: #c62828;
   --red-suit: #d22;
@@ -27,9 +33,10 @@
     --muted: #a3a8ae;
     --panel: #1e2226;
     --line: #353b41;
-    --felt: #0f4430;
-    --felt-light: #165a3f;
-    --felt-edge: #3a2716;
+    --felt: #125238;
+    --felt-light: #1f7a53;
+    --felt-edge: #6a4628;
+    --felt-edge-light: #8f6238;
     --good: #57c785;
     --bad: #ef6b6b;
     --red-suit: #ff6b6b;
@@ -105,9 +112,10 @@ button {
   --muted: #b9a7c6;
   --panel: #221629;
   --line: #3e2b4a;
-  --felt: #22112e;
-  --felt-light: #3a1d4b;
-  --felt-edge: #0d0712;
+  --felt: #2e1240;
+  --felt-light: #5a2580;
+  --felt-edge: #b4520f;
+  --felt-edge-light: #ff8a2a;
   --accent: #ff7a1a;
   --team-a: #ff9a3c;
   --team-b: #a68bff;

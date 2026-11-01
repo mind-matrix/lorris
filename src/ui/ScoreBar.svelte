@@ -41,9 +41,12 @@
   <div class="top">
     <span class="set">Set {view.setNumber}</span>
     {#if view.trump}
-      <span class="trump" class:red={isRed(view.trump)} aria-label="Trump: {SUIT_NAME[view.trump]}">
-        Trump <b>{SUIT_SYMBOL[view.trump]}</b>
-      </span>
+      {#key view.trump}
+        <span class="trump" class:red={isRed(view.trump)} role="img" aria-label="Trump: {SUIT_NAME[view.trump]}">
+          <span class="trump-label" aria-hidden="true">Trump</span>
+          <span class="trump-suit" aria-hidden="true">{SUIT_SYMBOL[view.trump]}</span>
+        </span>
+      {/key}
     {/if}
     {#if roomCode}
       <button
@@ -92,7 +95,8 @@
         </div>
         <!-- Always takes up its line (empty during bidding) so the layout doesn't jump when play starts. -->
         <div class="goal" class:met={g !== null && g.won >= g.target}>
-          {#if g}Rounds {g.won}/{g.target} <span class="why">· {g.label}</span>{:else}&nbsp;{/if}
+          {#if view.contract && teamOf(view.contract.seat) === team}<span class="call">Call {view.contract.value}</span>{/if}
+          {#if g}{#if g.won >= g.target}✓ {/if}Rounds {g.won}/{g.target}{#if g.label === 'blocking'} <span class="why">· blocking</span>{/if}{:else}&nbsp;{/if}
         </div>
       </div>
     {/each}
@@ -114,21 +118,52 @@
   .set {
     color: var(--muted);
   }
+  /* The trump suit: a small card-like tile in a gold frame, with a big suit symbol, so it can
+     be read at a glance. It pops in when the suit is chosen. */
   .trump {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 2px 10px;
-    border-radius: 999px;
-    background: var(--bg);
-    font-weight: 600;
+    gap: 6px;
+    padding: 2px 4px 2px 10px;
+    border-radius: 10px;
+    background: var(--trump-gold);
+    color: #2a1c00;
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--trump-gold) 45%, transparent),
+      0 2px 8px rgba(0, 0, 0, 0.25);
+    animation: trump-in 420ms cubic-bezier(0.2, 1.4, 0.4, 1);
   }
-  .trump b {
-    font-size: 1.15rem;
+  .trump-label {
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .trump-suit {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 7px;
+    background: #fff;
+    color: #111;
+    font-size: 1.6rem;
     line-height: 1;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
   }
-  .trump.red b {
-    color: var(--red-suit);
+  .trump.red .trump-suit {
+    color: #d22;
+  }
+  @keyframes trump-in {
+    from {
+      transform: scale(0.6);
+      opacity: 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .trump {
+      animation: none;
+    }
   }
   .share {
     position: relative;
@@ -189,13 +224,18 @@
     display: flex;
     gap: 8px;
   }
+  /* Each team's box is filled with its color, matching the seats on the table. */
   .score {
     flex: 1;
     min-width: 0;
     padding: 4px 8px;
     border-radius: 8px;
-    border-left: 5px solid var(--team-color);
-    background: var(--bg);
+    background: var(--team-color);
+    color: var(--team-ink);
+  }
+  /* Your team: a frame in the page's text color. */
+  .score.mine {
+    box-shadow: 0 0 0 2px var(--fg);
   }
   .team-0 {
     --team-color: var(--team-a);
@@ -208,16 +248,25 @@
     align-items: center;
     gap: 6px;
   }
+  .label {
+    white-space: nowrap;
+  }
   .mine .label {
     font-weight: 700;
   }
-  .you {
-    padding: 0 5px;
+  .you,
+  .call {
+    padding: 0 6px;
     border-radius: 6px;
-    background: var(--team-color);
-    color: #111;
+    background: var(--team-ink);
+    color: var(--team-color);
     font-size: 0.7rem;
-    font-weight: 700;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+  .call {
+    background: #fff;
+    color: var(--team-ink);
   }
   .points {
     margin-left: auto;
@@ -225,6 +274,10 @@
     font-weight: 700;
   }
   .goal {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 1.3em;
     font-size: 0.75rem;
     font-weight: 600;
     white-space: nowrap;
@@ -232,10 +285,10 @@
     text-overflow: ellipsis;
   }
   .goal.met {
-    color: var(--good);
+    font-weight: 800;
   }
   .why {
-    font-weight: 400;
-    color: var(--muted);
+    font-weight: 500;
+    opacity: 0.75;
   }
 </style>

@@ -25,6 +25,14 @@
   on the device.
 
 ### Changed
+- Playtest fixes for readability:
+  - The trump suit in the top bar is now a gold tile with a large suit symbol, and it pops in when chosen.
+  - Calls are easy to read: each player's call shows as "Call 5" (or "Pass") in a large bubble under their seat,
+    the winning call as a white "Called 5" with a gold edge, and the calling team's score box shows "Call 5".
+  - The board stands out from the page in every theme: brighter felt, a wooden rim with a highlight, a faint felt
+    texture and a shadow. In the Halloween theme the rim glows pumpkin orange.
+  - Score boxes and player boxes are filled with their team's color, so teams read at a glance; your team's box
+    has a frame. Whose turn it is now shows as a pulsing white ring, which can't be mistaken for a team color.
 - Card dealing now uses the sfc32 random generator (128 bits of state, passes the standard PractRand and
   TestU01 BigCrush test batteries) instead of Mulberry32 (32 bits), seeded with 128 bits from the platform's
   cryptographic generator. Random picks are now exactly uniform (rejection sampling instead of rounding).

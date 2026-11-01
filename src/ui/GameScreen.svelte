@@ -637,14 +637,25 @@
     padding-bottom: env(safe-area-inset-bottom);
     position: relative;
   }
+  /* The board: bright felt in a wooden rim, lifted off the page by a shadow, so it never
+     blends into the background (light, dark or Halloween). */
   .table {
     position: relative;
     flex: 1;
     min-height: 260px;
     margin: 8px;
     border-radius: 24px;
-    background: radial-gradient(ellipse at center, var(--felt-light), var(--felt));
-    box-shadow: inset 0 0 0 6px var(--felt-edge);
+    border: 8px solid var(--felt-edge);
+    border-top-color: var(--felt-edge-light);
+    background:
+      /* faint felt grain */
+      repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.025) 0 2px, transparent 2px 6px),
+      radial-gradient(ellipse 75% 60% at center, var(--felt-light), var(--felt));
+    box-shadow:
+      inset 0 0 0 1px rgba(0, 0, 0, 0.35),
+      inset 0 0 40px rgba(0, 0, 0, 0.35),
+      0 0 0 1px rgba(0, 0, 0, 0.25),
+      0 8px 22px rgba(0, 0, 0, 0.35);
     overflow: hidden;
   }
   .seat-pos {

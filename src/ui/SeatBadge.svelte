@@ -49,7 +49,7 @@
   {#if called !== null}
     <div class="bubble called">Called {called}</div>
   {:else if bid !== null}
-    <div class="bubble">{bid === 'pass' ? 'Pass' : bid}</div>
+    <div class="bubble" class:pass={bid === 'pass'}>{bid === 'pass' ? 'Pass' : `Call ${bid}`}</div>
   {/if}
 </div>
 
@@ -66,6 +66,7 @@
   .seat.speaking .mic {
     opacity: 1;
   }
+  /* Filled with the team's color, matching the score boxes, so teams read at a glance. */
   .seat {
     --card-w: 22px;
     display: flex;
@@ -74,8 +75,10 @@
     gap: 2px;
     padding: 4px 8px;
     border-radius: 10px;
-    background: var(--panel);
-    border: 2px solid var(--team-color);
+    background: var(--team-color);
+    color: var(--team-ink);
+    border: 2px solid color-mix(in srgb, var(--team-color) 60%, #000);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
     min-width: 64px;
     font-size: 0.8rem;
     transition: box-shadow 200ms ease;
@@ -86,13 +89,25 @@
   .team-1 {
     --team-color: var(--team-b);
   }
+  /* Whose turn: a pulsing white ring (white, so it never looks like a team color). */
   .turn {
-    box-shadow: 0 0 0 3px var(--accent), 0 0 14px var(--accent);
+    box-shadow:
+      0 0 0 3px #fff,
+      0 0 0 5px rgba(0, 0, 0, 0.35),
+      0 0 18px 4px rgba(255, 255, 255, 0.75);
     animation: pulse 1.4s ease-in-out infinite;
   }
   @keyframes pulse {
     50% {
-      box-shadow: 0 0 0 3px var(--accent), 0 0 4px var(--accent);
+      box-shadow:
+        0 0 0 3px #fff,
+        0 0 0 5px rgba(0, 0, 0, 0.35),
+        0 0 6px 1px rgba(255, 255, 255, 0.4);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .turn {
+      animation: none;
     }
   }
   .name {
@@ -106,8 +121,8 @@
     height: 16px;
     margin-left: 2px;
     border-radius: 50%;
-    background: var(--accent);
-    color: #111;
+    background: var(--team-ink);
+    color: #fff;
     font-size: 0.65rem;
   }
   .count {
@@ -115,24 +130,36 @@
     align-items: center;
     gap: 4px;
   }
+  /* A player's call, large and high-contrast so it's readable across the table. */
   .bubble {
-    padding: 0 6px;
+    margin-top: 2px;
+    padding: 2px 8px;
     white-space: nowrap;
     border-radius: 8px;
-    background: var(--bg);
-    font-weight: 600;
+    background: var(--team-ink);
+    color: #fff;
+    font-size: 0.85rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+  .bubble.pass {
+    background: rgba(0, 0, 0, 0.18);
+    color: var(--team-ink);
+    font-weight: 700;
   }
   .conn {
     font-size: 0.65rem;
-    font-weight: 600;
-    color: var(--muted);
+    font-weight: 700;
+    opacity: 0.8;
     white-space: nowrap;
   }
   .conn.reconnecting {
-    color: var(--accent);
+    opacity: 1;
   }
+  /* The winning call: white, with a gold edge like the trump tile. */
   .called {
-    background: var(--team-color);
-    color: #111;
+    background: #fff;
+    color: var(--team-ink);
+    box-shadow: 0 0 0 2px var(--trump-gold);
   }
 </style>

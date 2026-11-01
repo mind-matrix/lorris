@@ -1,7 +1,7 @@
 import type { Action, PlayerView, Seat } from '../core';
 import type { JoinPolicy, PauseState, SeatInfo, TableEvent, TableSummary } from '../net/protocol';
-import type { LinkStats } from '../net/transport';
-import type { ReceivedClip, VoiceClip } from '../net/voiceMessages';
+import type { PeerId, VoiceLink } from '../net/transport';
+import type { Seat as SeatT } from '../core';
 
 /** Connection state of this device, shown in the UI. Local games are always 'local'. */
 export type ConnectionState =
@@ -85,18 +85,23 @@ export interface OnlineSession extends GameSession {
   requestPause?(): void;
   /** Table-wide happenings, like someone taking over a bot seat. */
   subscribeEvents(listener: (event: TableEvent) => void): () => void;
-  /** Voice messages, or null when the connection can't carry them. */
-  voiceMessages(): VoiceMessaging | null;
+  /** What voice chat needs from the connection, or null when it can't carry voice. */
+  voice(): VoiceAccess | null;
 }
 
-/** Voice messages for one player: sending clips to the table, hearing everyone else's. */
-export interface VoiceMessaging {
-  /** Sends a clip to everyone else at the table. False if refused (too long, too often...). */
-  send(clip: VoiceClip): boolean;
-  /** Clips from everyone else at the table. */
-  subscribe(listener: (clip: ReceivedClip) => void): () => void;
-  /** This device's connection to the table, read locally (sends nothing). */
-  linkStats(): Promise<LinkStats | null>;
+/** Voice chat's view of the connection: its signaling channel, and who's at the table. */
+export interface VoiceAccess {
+  link: VoiceLink;
+  isHost: boolean;
+  /** Seats at the table. */
+  playerCount: number;
+  /** This player's seat, or null without one. */
+  mySeat(): SeatT | null;
+  /** Host only: each seated, connected player's connection and seat. */
+  seatedPeers(): Map<PeerId, SeatT>;
+  /** Players only: the host's connection (null until connected). */
+  hostPeer(): PeerId | null;
+  onPeerLeave(handler: (peer: PeerId) => void): () => void;
 }
 
 /** Extra controls only the host has. */

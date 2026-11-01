@@ -1,21 +1,21 @@
 // The mic button's gestures. Both work on the same button:
-// - Press and hold: record while held; release to send.
-// - Tap: start recording and keep going; tap again to send.
-// An interrupted press (pointer cancelled, app hidden) throws the recording away.
+// - Press and hold: talk while held; release to stop.
+// - Tap: start talking and keep going; tap again to stop.
+// An interrupted press (pointer cancelled, app hidden) stops talking.
 //
-// Recording starts the moment the button goes down (no delay before a hold). On release, the
-// press length decides: a short press was a tap, so recording continues; a long one was a
-// hold, so it's sent.
+// Talking starts the moment the button goes down (no delay before a hold). On release, the
+// press length decides: a short press was a tap, so talking continues; a long one was a
+// hold, so it stops.
 
 /** Presses shorter than this are taps; longer ones are holds. */
 export const HOLD_MS = 350;
 
 export interface PushToTalkActions {
-  /** Start recording (`latched`: it was a tap, so it continues after release). */
+  /** Start talking (`latched`: it was a tap, so it continues after release). */
   start(latched: boolean): void;
-  /** Finish and send. */
+  /** Stop talking. */
   stop(): void;
-  /** Throw the recording away. */
+  /** The press was interrupted: stop talking. */
   abort(): void;
 }
 

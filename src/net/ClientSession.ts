@@ -3,8 +3,7 @@
 
 import { getLegalActionsFromView, type Action, type PlayerView, type Seat } from '../core';
 import { STORAGE_KEYS, type ClientGameRef, type KeyValueStore } from '../session/storage';
-import type { ConnectionState, LobbySnapshot, OnlineSession, SessionError, TableInfo, VoiceMessaging } from '../session/types';
-import { VoiceRateLimiter, outgoingMeta, parseForwarded, parseOutgoing, type ReceivedClip } from './voiceMessages';
+import type { ConnectionState, LobbySnapshot, OnlineSession, SessionError, TableInfo, VoiceAccess } from '../session/types';
 import { NET_CONFIG, type NetConfig } from './config';
 import { DEFAULT_POLICY } from './lobby';
 import {
@@ -77,8 +76,6 @@ export class ClientSession implements OnlineSession {
   private name: string;
   private token: string | null = null;
 
-  private clipListeners = new Set<(clip: ReceivedClip) => void>();
-  private clipLimiter = new VoiceRateLimiter();
   private hostPeer: PeerId | null = null;
   private mySeat: Seat | null = null;
   private view: PlayerView | null = null;
@@ -140,16 +137,6 @@ export class ClientSession implements OnlineSession {
         if (e.kind === 'signaling-unreachable' && !this.welcomed) this.fail(MESSAGES.offline);
       }),
     );
-    // Voice messages come only from the host (who stamps the speaker's seat).
-    if (t.voice) {
-      this.unsubscribers.push(
-        t.voice.onClip((from, data, meta) => {
-          if (from !== this.hostPeer) return;
-          const clip = parseForwarded(data, meta);
-          if (clip && clip.seat !== this.seats[0]) for (const l of this.clipListeners) l(clip);
-        }),
-      );
-    }
     await this.connect();
     this.heartbeat = setInterval(() => this.tick(), this.net.heartbeatIntervalMs);
   }
@@ -167,23 +154,17 @@ export class ClientSession implements OnlineSession {
     return () => this.tableListeners.delete(listener);
   }
 
-  voiceMessages(): VoiceMessaging | null {
+  voice(): VoiceAccess | null {
     const link = this.transport.voice;
     if (!link) return null;
     return {
-      send: (clip) => {
-        const host = this.hostPeer;
-        if (!host || this.seats.length === 0) return false;
-        if (!parseOutgoing(clip.data, outgoingMeta(clip))) return false;
-        if (!this.clipLimiter.allow(Date.now())) return false;
-        link.sendClip(clip.data, outgoingMeta(clip), host);
-        return true;
-      },
-      subscribe: (listener) => {
-        this.clipListeners.add(listener);
-        return () => this.clipListeners.delete(listener);
-      },
-      linkStats: async () => (this.hostPeer ? link.linkStats(this.hostPeer) : null),
+      link,
+      isHost: false,
+      playerCount: this.view?.config.playerCount ?? this.table?.handCounts.length ?? 6,
+      mySeat: () => this.seats[0] ?? null,
+      seatedPeers: () => new Map(),
+      hostPeer: () => this.hostPeer,
+      onPeerLeave: (handler) => this.transport.onPeerLeave(handler),
     };
   }
 

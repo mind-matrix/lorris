@@ -14,12 +14,12 @@
     onabort,
     onunavailable,
   }: {
-    /** Recording right now. */
+    /** Talking right now. */
     recording: boolean;
-    /** Tapped on: keeps recording until tapped again. */
+    /** Tapped on: keeps talking until tapped again. */
     latched: boolean;
     elapsedMs: number;
-    /** The network is too slow for voice messages: greyed out. */
+    /** The network is too slow for voice: greyed out. */
     slow: boolean;
     /** No microphone access. */
     blocked: boolean;
@@ -37,13 +37,13 @@
 
   const ptt = new PushToTalk({ start: (l) => onstart(l), stop: () => onstop(), abort: () => onabort() });
 
-  // Recording ended elsewhere (length limit, couldn't start): the next press starts fresh.
+  // Talking ended elsewhere (silence, the length limit, couldn't start): the next press starts fresh.
   $effect(() => {
     void resetToken;
     if (!recording) ptt.reset();
   });
 
-  // Never keep recording in the background.
+  // Never keep talking in the background.
   $effect(() => {
     const onHide = () => document.visibilityState === 'hidden' && ptt.cancel();
     document.addEventListener('visibilitychange', onHide);
@@ -79,13 +79,13 @@
   const label = $derived(
     recording
       ? latched
-        ? `Recording, ${seconds} seconds. Tap to send.`
-        : `Recording, ${seconds} seconds. Release to send.`
+        ? `Talking, ${seconds} seconds. Tap to stop.`
+        : `Talking, ${seconds} seconds. Release to stop.`
       : blocked
-        ? 'Voice message: no microphone access'
+        ? 'Talk: no microphone access'
         : slow
-          ? 'Voice message: network too slow right now'
-          : 'Voice message: hold to record, or tap to start',
+          ? 'Talk: network too slow right now'
+          : 'Talk: hold, or tap to start and tap again to stop',
   );
 </script>
 

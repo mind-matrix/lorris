@@ -227,26 +227,46 @@ The design is to pause and wait for the host, with a timeout:
 Bump `PROTOCOL_VERSION` for any change to a message's shape. Never change `HELLO`, `REJECTED`,
 or the envelope fields `v` and `seq`.
 
-## Voice messages (alongside the game protocol)
+## Voice chat (alongside the game protocol)
 
-Voice messages are short recorded clips. A player holds the mic button to record and releases to
-send, or taps to start and taps again to send. Nothing is sent while nobody is recording.
+Voice chat streams live. A player holds the round mic button to talk, or taps it to start and
+taps again to stop. Nothing is sent while nobody is talking.
 
-They use their own Trystero channel (`voice`), carrying binary audio plus JSON metadata, so they
-don't change `PROTOCOL_VERSION`; older apps simply ignore them. Like the game, they go through
-the host: the host checks each clip, stamps it with the sender's seat, and forwards it to every
-other seated, connected player. Audio travels directly between devices, or through the TURN relay
-when a network blocks direct connections.
+**Topology.** Each player has one voice connection (a separate WebRTC connection) to the host.
+A talker sends one stream to the host, and the host forwards it to everyone else at the table.
+So a talker uploads one stream however many people listen, and only player-host links can ever
+need the TURN relay. Players never hear their own voice.
 
-- Player to host, metadata `{ v: 1, mime, durationMs }`. Any `seat` here is ignored: the host
-  uses its own record of which seat that connection holds.
-- Host to players, metadata `{ v: 1, seat, mime, durationMs }`. Players accept clips only from
-  the host.
-- Limits (`src/net/voiceMessages.ts`): 0.4 to 15 seconds, at most 48 KB, audio formats only
-  (`audio/webm`, `audio/ogg`, `audio/mp4`, `audio/aac`, `audio/mpeg`), at most one clip per second
-  and 20 per minute per player. The host enforces them; the sender checks them too.
-- Recorded at 16 kbps: about 2 KB per second of speech. That's the only relay traffic voice adds.
-- Everyone at the table hears every message: there are no team-only messages, in keeping with
-  the no-table-talk rule.
-- Slow-network detection (the mic button greys out) reads the browser's Network Information API
-  and the WebRTC statistics of the existing connection. It sends nothing.
+**Setup.** Nothing is set up until someone first talks. Then the host opens a voice connection
+to every seated player, with all its audio slots created up front: one for the player's
+microphone (`recvonly` at the host) and one per other seat for forwarded voices (`sendonly`).
+Starting and stopping talking attaches or detaches a track with `RTCRtpSender.replaceTrack`:
+no renegotiation, and a detached slot sends no packets at all.
+
+**Low-data audio** (`src/net/voiceSdp.ts`, applied to every received session description):
+Opus with 60 ms packets, DTX (almost nothing sent in pauses between words), mono, capped at
+12 kbps, and no optional RTP header extensions. Measured in Chromium with speech-like audio, on
+the wire including headers: about 9.5 kbps per stream while talking (about 71 KB per minute of
+talking), against 33.5 kbps with the browser's defaults.
+
+**Messages** on their own Trystero channel (`vc`), JSON, version 2 (`src/net/voiceProtocol.ts`).
+They don't change `PROTOCOL_VERSION`; older apps ignore them.
+
+- Host to player: `offer { sdp, mic, slots }` (`slots` maps each media section to the seat whose
+  voice it carries), `ice { candidate }`, `talk { seat, on }`.
+- Player to host: `answer { sdp }`, `ice { candidate }`, `talk { on }`.
+- The host accepts messages only from seated players and ignores any seat a player claims;
+  players accept messages only from the host.
+- The host forwards one person's voice for at most 2 minutes at a time, then tells them to
+  stop. A tapped-on mic also switches off after 20 seconds of silence.
+
+**Forwarding needs a sink.** Chromium only produces audio from an incoming track while something
+consumes it, so the host attaches every incoming voice to a muted media element (muted media
+may always autoplay). Without that, forwarding would depend on the host's speaker playing it.
+
+**Slow networks.** The mic button greys out when the device's network is too slow, judged in the
+background from the Network Information API and the existing game connection's WebRTC
+statistics. That check sends nothing.
+
+The whole table hears every voice: there are no team-only channels, in keeping with the
+no-table-talk rule.

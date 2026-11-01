@@ -28,7 +28,7 @@ export interface Transport {
   onError(handler: (error: TransportError) => void): () => void;
   /** Leave the room and drop all connections. connect() may be called again afterwards. */
   disconnect(): void;
-  /** Voice messages and connection statistics, on transports that support them. */
+  /** Voice chat signaling and connection statistics, on transports that support them. */
   readonly voice?: VoiceLink;
 }
 
@@ -53,15 +53,15 @@ export interface LinkStats {
 }
 
 /**
- * Voice messages: short recorded clips sent as binary data on their own channel, next to the
- * game protocol. Also connection statistics for deciding whether the network is too slow.
+ * Voice chat's own small channel, next to the game protocol: JSON messages that set up the
+ * voice connection and say who's talking. Also connection statistics for deciding whether the
+ * network is too slow. The audio itself travels on a separate voice connection.
  */
 export interface VoiceLink {
-  /** Sends a clip (binary) with small JSON metadata, to one peer or several. */
-  sendClip(data: ArrayBuffer, meta: unknown, to: PeerId | PeerId[]): void;
-  onClip(handler: (from: PeerId, data: ArrayBuffer, meta: unknown) => void): () => void;
+  send(message: unknown, to: PeerId | PeerId[]): void;
+  onMessage(handler: (from: PeerId, message: unknown) => void): () => void;
   /**
-   * Quality of the connection to a peer, read from statistics the browser keeps anyway.
+   * Quality of the game connection to a peer, read from statistics the browser keeps anyway.
    * Sends nothing over the network (and so nothing through a relay).
    */
   linkStats(peer: PeerId): Promise<LinkStats | null>;

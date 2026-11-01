@@ -16,14 +16,14 @@ export class TrysteroTransport implements Transport {
   private errors = new Emitter<[TransportError]>();
   /** Bumped by every connect() and disconnect(), so a connect() still waiting can tell it's stale. */
   private attempt = 0;
-  private sendClipRaw: ((data: ArrayBuffer, options: { target: string | string[]; metadata: never }) => Promise<void>) | null = null;
-  private clips = new Emitter<[PeerId, ArrayBuffer, unknown]>();
+  private sendVoiceRaw: ((data: never, options: { target: string | string[] }) => Promise<void>) | null = null;
+  private voiceMessages = new Emitter<[PeerId, unknown]>();
 
   readonly voice: VoiceLink = {
-    sendClip: (data, meta, to) => {
-      this.sendClipRaw?.(data, { target: to, metadata: meta as never }).catch(() => {});
+    send: (message, to) => {
+      this.sendVoiceRaw?.(message as never, { target: to }).catch(() => {});
     },
-    onClip: (handler) => this.clips.add(handler),
+    onMessage: (handler) => this.voiceMessages.add(handler),
     linkStats: (peer) => this.linkStats(peer),
   };
 
@@ -83,13 +83,10 @@ export class TrysteroTransport implements Transport {
     // One action carries every protocol message; the protocol layer tells them apart.
     const action = room.makeAction('lorris');
     action.onMessage = (data, { peerId }) => this.messages.emit(peerId, data);
-    // Voice messages: binary clips on their own channel, with JSON metadata.
-    const voiceAction = room.makeAction('voice');
-    voiceAction.onMessage = (data, { peerId, metadata }) => {
-      const bytes = toArrayBuffer(data);
-      if (bytes) this.clips.emit(peerId, bytes, metadata);
-    };
-    this.sendClipRaw = voiceAction.send as never;
+    // Voice chat signaling and talk state: small JSON messages on their own channel.
+    const voiceAction = room.makeAction('vc');
+    voiceAction.onMessage = (data, { peerId }) => this.voiceMessages.emit(peerId, data);
+    this.sendVoiceRaw = voiceAction.send as never;
     room.onPeerJoin = (peer) => this.joins.emit(peer);
     room.onPeerLeave = (peer) => this.leaves.emit(peer);
     this.room = room;
@@ -125,12 +122,7 @@ export class TrysteroTransport implements Transport {
     this.room?.leave().catch(() => {});
     this.room = null;
     this.sendRaw = null;
-    this.sendClipRaw = null;
+    this.sendVoiceRaw = null;
   }
 }
 
-function toArrayBuffer(data: unknown): ArrayBuffer | null {
-  if (data instanceof ArrayBuffer) return data;
-  if (ArrayBuffer.isView(data)) return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-  return null;
-}

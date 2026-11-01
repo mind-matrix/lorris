@@ -3,13 +3,15 @@
 ## Unreleased
 
 ### Added
-- Voice messages in online games: a round mic button at the right of the controls. Hold it to record and
-  release to send, or tap to start and tap again to send (up to 15 seconds). Messages go through the host to
-  everyone at the table (no team-only messages, in keeping with the no-table-talk rule) and play one at a time,
-  with the speaker's seat glowing. Nothing is sent while nobody is recording, and a message costs about 2 KB per
-  second of speech, through the TURN relay only when a network needs it. The microphone is only open around
-  recording. The button greys out when the network is too slow, measured in the background from the device's
-  own network information and connection statistics, without sending anything.
+- Voice chat in online games, streaming live: a round mic button at the right of the controls. Hold it to talk
+  while held, or tap it to start talking and tap again to stop. Voices go through the host to everyone at the
+  table (no team channels, in keeping with the no-table-talk rule), and each talker's seat glows. Built for the
+  lowest data use: nothing is set up until someone talks, nothing is sent while nobody talks, and while talking
+  the audio uses about 9.5 kbps per stream (about 71 KB per minute) thanks to longer packets, silence
+  suppression, mono and a 12 kbps cap. A talker uploads one stream however many people listen. The microphone is
+  only open around talking; a tapped-on mic switches off after 20 seconds of silence, and the host stops
+  forwarding after 2 minutes. The button greys out when the network is too slow, measured in the background
+  without sending anything.
 - Halloween season, every year from October 18 to November 7 (India time): the week of Halloween plus a week
   either side.
   - The whole app switches to a Halloween theme: a candlelit purple table, pumpkin-orange accents, and a moon,

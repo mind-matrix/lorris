@@ -17,11 +17,10 @@
   import SettingsSheet from './SettingsSheet.svelte';
   import LeaveDialog from './LeaveDialog.svelte';
   import MicButton from './MicButton.svelte';
-  import { VoiceRecorder, recordingSupported } from './voiceRecorder';
-  import { ClipPlayer } from './voicePlayback';
+  import { VoiceGuest, VoiceHost } from '../net/voiceRtc';
   import { NetworkQuality } from '../net/networkQuality';
   import { sampleNetwork } from './networkSample';
-  import type { VoiceMessaging } from '../session/types';
+  import { browserVoiceDeps, micLevel, voiceSupported } from './voiceBrowser';
   import { isHalloweenSeason } from '../seasonal/halloween';
   import { TEAM_NAME } from './labels';
   import { DEAL_FLIGHT_MS, DEAL_STEP_MS, ROUND_LINGER_MS, dealDurationMs } from './timing';
@@ -61,140 +60,168 @@
   let jokerScare = $state<{ key: number; player: string } | null>(null);
   let settingsOpen = $state(false);
 
-  // ---------- Voice messages (online games) ----------
-  // The round mic button: hold to record and release to send, or tap to start and tap to send.
-  // Clips go to the host, which passes them to everyone else at the table. The microphone is
-  // off except while recording, and the button greys out while the network is too slow.
-  let messaging: VoiceMessaging | null = null;
-  let recorder: VoiceRecorder | null = null;
+  // ---------- Voice chat (online games) ----------
+  // The round mic button: hold to talk, or tap to start and tap again to stop. Voices stream
+  // live through the host. Nothing is sent while nobody talks, the microphone is only open
+  // around talking, and the button greys out while the network is too slow.
+  let voice: VoiceHost | VoiceGuest | null = null;
   let micVisible = $state(false);
-  let micRecording = $state(false);
+  let micTalking = $state(false);
   let micLatched = $state(false);
   let micElapsed = $state(0);
   let micBlocked = $state(false);
   let micReset = $state(0);
+  let micPermission: 'unknown' | 'granted' | 'denied' = 'unknown';
   let netSlow = $state(false);
-  /** Whose voice message is playing. */
-  let speakingSeat = $state<Seat | null>(null);
-  let recordTimer: ReturnType<typeof setInterval> | null = null;
+  /** Seats talking right now. */
+  let talkingSeats = $state<ReadonlySet<Seat>>(new Set());
+  let talkTimer: ReturnType<typeof setInterval> | null = null;
+  let talkMeter: { level(): number; stop(): void } | null = null;
   let toldAboutTableTalk = false;
 
+  /** A tapped-on mic switches off after this long with no sound. */
+  const LATCHED_SILENCE_MS = 20_000;
+  const SILENCE_LEVEL = 0.02;
+
   $effect(() => {
-    const vm = online?.voiceMessages();
-    if (!vm) return;
-    messaging = vm;
-    // Everyone hears messages; recording needs browser support.
-    const player = new ClipPlayer(
-      (seat) => (speakingSeat = seat),
-      (seat) => showToast(`Couldn't play ${names[seat] ?? 'a'} voice message on this device.`),
+    const access = online?.voice();
+    if (!access || !voiceSupported()) return;
+    const v = access.isHost ? new VoiceHost(browserVoiceDeps(access)) : new VoiceGuest(browserVoiceDeps(access));
+    voice = v;
+    if (v instanceof VoiceGuest) {
+      v.onForcedStop = () => {
+        endTalkUi();
+        showToast('Voice turns off after 2 minutes of talking. Tap to talk again.');
+      };
+    }
+    const offState = v.subscribe((s) => (talkingSeats = s.talking));
+    const quality = new NetworkQuality(() =>
+      sampleNetwork(async () => {
+        const link = access.link;
+        if (!access.isHost) {
+          const host = access.hostPeer();
+          return host ? link.linkStats(host) : null;
+        }
+        // The host talks to everyone: typical round trip, and the weakest outgoing link.
+        const all = (await Promise.all([...access.seatedPeers().keys()].map((p) => link.linkStats(p)))).filter((x) => x !== null);
+        if (all.length === 0) return null;
+        const rtts = all.map((x) => x!.rttMs).filter((r): r is number => r !== null).sort((a, b) => a - b);
+        const outs = all.map((x) => x!.outgoingKbps).filter((k): k is number => k !== null);
+        return { rttMs: rtts.length ? rtts[Math.floor(rtts.length / 2)] : null, outgoingKbps: outs.length ? Math.min(...outs) : null };
+      }),
     );
-    const offClips = vm.subscribe((clip) => player.enqueue(clip));
-    const quality = new NetworkQuality(() => sampleNetwork(vm));
     const offQuality = quality.subscribe((slow) => (netSlow = slow));
     const onVisibility = () => (document.visibilityState === 'hidden' ? quality.stop() : quality.start());
     document.addEventListener('visibilitychange', onVisibility);
     quality.start();
-    if (recordingSupported()) {
-      recorder = new VoiceRecorder();
-      micVisible = true;
-    }
+    micVisible = true;
     return () => {
-      offClips();
+      offState();
       offQuality();
       quality.stop();
       document.removeEventListener('visibilitychange', onVisibility);
-      player.stop();
-      recorder?.dispose();
-      recorder = null;
-      messaging = null;
+      endTalkUi();
+      v.dispose();
+      voice = null;
       micVisible = false;
-      stopRecordTimer();
+      talkingSeats = new Set();
     };
   });
 
-  function stopRecordTimer() {
-    if (recordTimer) clearInterval(recordTimer);
-    recordTimer = null;
+  function endTalkUi() {
+    micTalking = false;
+    micLatched = false;
+    if (talkTimer) clearInterval(talkTimer);
+    talkTimer = null;
+    talkMeter?.stop();
+    talkMeter = null;
   }
 
   async function micStart(latched: boolean) {
-    const rec = recorder;
-    if (!rec) return;
+    const v = voice;
+    if (!v) return;
     if (latched) {
-      micLatched = true; // a tap: keep recording until the next tap
+      micLatched = true; // a tap: keep talking until the next tap
       return;
     }
-    if (rec.permission !== 'granted') {
-      // First press: just ask for the microphone. Recording starts with the next press.
+    if (micPermission !== 'granted') {
+      // First press: just ask for the microphone. Talking starts with the next press.
       micReset++;
-      const p = await rec.requestMic();
-      micBlocked = p === 'denied';
-      showToast(p === 'granted' ? 'Microphone ready. Hold the mic to talk, or tap to start and tap to send.' : 'No microphone access, so you can hear others but not send voice messages.');
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        for (const t of s.getTracks()) t.stop();
+        micPermission = 'granted';
+        micBlocked = false;
+        showToast('Microphone ready. Hold the mic to talk, or tap to start and tap again to stop.');
+      } catch {
+        micPermission = 'denied';
+        micBlocked = true;
+        showToast('No microphone access, so you can hear others but not talk.');
+      }
       return;
     }
-    micRecording = true;
+    micTalking = true;
     micLatched = false;
     micElapsed = 0;
     const startedAt = performance.now();
-    recordTimer = setInterval(() => (micElapsed = performance.now() - startedAt), 250);
-    const ok = await rec.start(() => {
-      showToast('Voice messages can be up to 15 seconds. Sent.');
-      void micStop();
-    });
+    let lastSound = startedAt;
+    talkTimer = setInterval(() => {
+      const now = performance.now();
+      micElapsed = now - startedAt;
+      // Tapped on and forgotten: switch off after a long silence.
+      const stream = v.micStream();
+      if (stream && !talkMeter) talkMeter = micLevel(stream);
+      if (!talkMeter || talkMeter.level() > SILENCE_LEVEL) lastSound = now;
+      if (micLatched && now - lastSound > LATCHED_SILENCE_MS) {
+        micStop();
+        showToast('Mic off after 20 seconds of silence. Tap to talk again.');
+      }
+    }, 250);
+    const ok = await v.startTalking();
     if (!ok) {
-      micRecording = false;
-      micBlocked = true;
-      stopRecordTimer();
+      endTalkUi();
       micReset++;
-      showToast('No microphone access, so you can hear others but not send voice messages.');
-    }
-  }
-
-  async function micStop() {
-    if (!micRecording || !recorder) return;
-    micRecording = false;
-    micLatched = false;
-    stopRecordTimer();
-    const result = await recorder.stop();
-    if (!result) return;
-    if ('tooShort' in result) {
-      showToast('Too short to send. Hold the mic a little longer.');
+      micBlocked = true;
+      showToast('No microphone access, so you can hear others but not talk.');
       return;
     }
-    if (!messaging?.send(result.clip)) {
-      showToast("Couldn't send that one. Wait a moment between voice messages.");
+    if (!micTalking) {
+      // Released before the microphone was ready.
+      v.stopTalking();
       return;
     }
     if (!toldAboutTableTalk) {
       toldAboutTableTalk = true;
-      showToast('Sent to the whole table. No talking about your cards!');
+      showToast('Everyone at the table hears you. No talking about your cards!');
     }
   }
 
-  function micAbort() {
-    micRecording = false;
-    micLatched = false;
-    stopRecordTimer();
-    void recorder?.cancel();
+  function micStop() {
+    endTalkUi();
+    voice?.stopTalking();
+    micReset++;
   }
 
   async function micUnavailable() {
-    if (micBlocked && recorder) {
+    if (micBlocked) {
       // Maybe they've allowed the microphone in settings since.
-      if ((await recorder.requestMic()) === 'granted') {
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        for (const t of s.getTracks()) t.stop();
+        micPermission = 'granted';
         micBlocked = false;
-        showToast('Microphone ready. Hold the mic to talk, or tap to start and tap to send.');
-      } else showToast("Microphone access is blocked. Allow it in your browser's site settings to send voice messages.");
+        showToast('Microphone ready. Hold the mic to talk, or tap to start and tap again to stop.');
+      } catch {
+        showToast("Microphone access is blocked. Allow it in your browser's site settings to talk.");
+      }
       return;
     }
-    if (netSlow) showToast('Your connection is slow right now, so voice messages are paused.');
+    if (netSlow) showToast('Your connection is slow right now, so voice is paused.');
   }
 
-  /** A seat's voice indicator: glowing while their message plays (or while you record). */
+  /** A seat's voice indicator: glowing while they talk. */
   function voiceOf(seat: Seat): 'none' | 'speaking' {
-    if (seat === speakingSeat) return 'speaking';
-    if (seat === activeSeat && micRecording) return 'speaking';
-    return 'none';
+    return talkingSeats.has(seat) || (seat === activeSeat && micTalking) ? 'speaking' : 'none';
   }
   let roomOpen = $state(false);
   let guestMenuOpen = $state(false);
@@ -515,7 +542,7 @@
       {#if micVisible}
         <div class="mic-slot">
           <MicButton
-            recording={micRecording}
+            recording={micTalking}
             latched={micLatched}
             elapsedMs={micElapsed}
             slow={netSlow}
@@ -523,7 +550,7 @@
             resetToken={micReset}
             onstart={micStart}
             onstop={micStop}
-            onabort={micAbort}
+            onabort={micStop}
             onunavailable={micUnavailable}
           />
         </div>

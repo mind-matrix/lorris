@@ -122,23 +122,22 @@ export class InMemoryNetwork {
     }, at - now);
   }
 
-  /** Voice clips: same delivery rules (latency, order, drops, stalls) as messages. Not tapped. */
-  _sendClip(roomId: string, from: PeerId, to: PeerId, data: ArrayBuffer, meta: unknown): void {
+  /** Voice channel messages: same delivery rules (latency, order, drops, stalls) as messages. Not tapped. */
+  _sendVoice(roomId: string, from: PeerId, to: PeerId, message: unknown): void {
     if (this.stalled.has(from) || this.stalled.has(to) || !this.connected(roomId, from, to)) return;
     if (this.dropRate > 0) {
       let r: number;
       [r, this.rng] = mulberry32(this.rng);
       if (r < this.dropRate) return;
     }
-    const bytes = data.slice(0); // a copy, like a real wire
-    const wireMeta = JSON.stringify(meta ?? null);
+    const wire = JSON.stringify(message ?? null);
     const key = `${from}>${to}`;
     const now = Date.now();
     const at = Math.max(now + this.latency(from, to), this.lastDelivery.get(key) ?? 0);
     this.lastDelivery.set(key, at);
     this.later(() => {
       if (!this.connected(roomId, from, to) || this.stalled.has(to)) return;
-      this.rooms.get(roomId)!.get(to)!.transport._receiveClip(from, bytes, JSON.parse(wireMeta));
+      this.rooms.get(roomId)!.get(to)!.transport._receiveVoice(from, JSON.parse(wire));
     }, at - now);
   }
 
@@ -177,16 +176,16 @@ export class InMemoryTransport implements Transport {
   private leaves = new Emitter<[PeerId]>();
   private errors = new Emitter<[TransportError]>();
   private peers = new Set<PeerId>();
-  private clips = new Emitter<[PeerId, ArrayBuffer, unknown]>();
+  private voiceMessages = new Emitter<[PeerId, unknown]>();
 
   readonly voice: VoiceLink = {
-    sendClip: (data, meta, to) => {
+    send: (message, to) => {
       if (!this.roomId) return;
       for (const peer of Array.isArray(to) ? to : [to]) {
-        if (this.peers.has(peer)) this.network._sendClip(this.roomId, this.selfId, peer, data, meta);
+        if (this.peers.has(peer)) this.network._sendVoice(this.roomId, this.selfId, peer, message);
       }
     },
-    onClip: (handler) => this.clips.add(handler),
+    onMessage: (handler) => this.voiceMessages.add(handler),
     linkStats: async (peer): Promise<LinkStats | null> =>
       this.peers.has(peer) ? { rttMs: this.network._rttMs(this.selfId, peer), outgoingKbps: null } : null,
   };
@@ -234,8 +233,8 @@ export class InMemoryTransport implements Transport {
   }
 
   // ---- called by the network ----
-  _receiveClip(from: PeerId, data: ArrayBuffer, meta: unknown) {
-    if (this.peers.has(from)) this.clips.emit(from, data, meta);
+  _receiveVoice(from: PeerId, message: unknown) {
+    if (this.peers.has(from)) this.voiceMessages.emit(from, message);
   }
 
   _receive(from: PeerId, message: unknown) {

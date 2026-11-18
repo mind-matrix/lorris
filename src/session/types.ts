@@ -64,12 +64,20 @@ export interface LobbySnapshot {
   /** A short message for a newcomer choosing a seat (seat taken, seat expired...). */
   notice: string | null;
   pause: PauseState;
+  /** This device only watches: no seat, no hand. */
+  spectating: boolean;
+  /** Names of the people watching. */
+  spectators: string[];
 }
 
 /** A game played over the network, as host or client. */
 export interface OnlineSession extends GameSession {
   readonly isHost: boolean;
   readonly roomCode: string;
+  /** This device joined as a spectator (client only; the host always plays). */
+  readonly spectating: boolean;
+  /** Spectators only: the public table (a view with no hand) after every change. */
+  watch?(listener: (view: PlayerView) => void): () => void;
   subscribeLobby(listener: (lobby: LobbySnapshot) => void): () => void;
   /** Call when the page becomes visible again (phones pause background tabs). */
   resume(): void;
@@ -119,4 +127,6 @@ export interface HostControls {
   /** After reopening a saved game: carry on, with bots in any seats whose players haven't returned. */
   continueResumed(): void;
   saveAndClose(): Promise<void>;
+  /** After the game is over: back to the lobby in the same room, everyone keeping their seat. */
+  playAgain(): void;
 }

@@ -104,6 +104,11 @@ export function parseClientMessage(raw: unknown): Parsed<ClientMessage> {
     case 'TAKE_SEAT':
       if (!(m.seat === null || isInt(m.seat, 0, 11))) return { ok: false, reason: 'bad seat' };
       return { ok: true, message: { ...base, type: 'TAKE_SEAT', seat: m.seat as number | null } };
+    case 'SPECTATE': {
+      const name = cleanName(m.name);
+      if (!name) return { ok: false, reason: 'bad name' };
+      return { ok: true, message: { ...base, type: 'SPECTATE', name } };
+    }
     default:
       return { ok: false, reason: 'unknown type' };
   }
@@ -124,6 +129,13 @@ function parseSeats(x: unknown): SeatInfo[] | null {
     seats.push(seat);
   }
   return seats;
+}
+
+/** Spectators' names: a short list of clean names (anything unusable is dropped). */
+function parseSpectators(x: unknown): string[] | null {
+  if (!Array.isArray(x) || x.length > NET_CONFIG.maxSpectators) return null;
+  if (!x.every((n) => isStr(n, NET_CONFIG.maxNameLength * 2))) return null;
+  return x.flatMap((n) => cleanName(n) ?? []);
 }
 
 function parsePolicy(x: unknown): JoinPolicy | null {
@@ -194,6 +206,9 @@ export function parseHostMessage(raw: unknown): Parsed<HostMessage> {
         return { ok: false, reason: 'bad welcome' };
       }
       return { ok: true, message: { ...base, type: 'WELCOME', seat: m.seat, token: m.token, roomCode: m.roomCode, config: m.config as never } };
+    case 'SPECTATING':
+      if (!isStr(m.roomCode, 16) || !isObj(m.config) || !isInt((m.config as Obj).playerCount, 2, 12)) return { ok: false, reason: 'bad spectating' };
+      return { ok: true, message: { ...base, type: 'SPECTATING', roomCode: m.roomCode, config: m.config as never } };
     case 'REJECTED':
       if (!REJECT_REASONS.includes(m.reason as RejectReason) || !isInt(m.hostVersion, 0)) return { ok: false, reason: 'bad rejection' };
       return { ok: true, message: { ...base, type: 'REJECTED', reason: m.reason as RejectReason, hostVersion: m.hostVersion } };
@@ -206,10 +221,14 @@ export function parseHostMessage(raw: unknown): Parsed<HostMessage> {
         isObj(p) && typeof p.paused === 'boolean' && typeof p.resuming === 'boolean' && (p.by === null || isInt(p.by, 0, 11))
           ? { paused: p.paused, resuming: p.resuming, by: p.by as number | null }
           : null;
-      if (!seats || !policy || !pause || table === undefined || !isInt(m.lobbyVersion, 0) || typeof m.started !== 'boolean') {
+      const spectators = parseSpectators(m.spectators);
+      if (!seats || !policy || !pause || !spectators || table === undefined || !isInt(m.lobbyVersion, 0) || typeof m.started !== 'boolean') {
         return { ok: false, reason: 'bad lobby' };
       }
-      return { ok: true, message: { ...base, type: 'LOBBY', lobbyVersion: m.lobbyVersion, seats, started: m.started, policy, table, pause } };
+      return {
+        ok: true,
+        message: { ...base, type: 'LOBBY', lobbyVersion: m.lobbyVersion, seats, started: m.started, policy, table, pause, spectators },
+      };
     }
     case 'SEAT_DENIED':
       if (!DENIED_REASONS.includes(m.reason as SeatDeniedReason)) return { ok: false, reason: 'bad denial' };

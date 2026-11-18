@@ -17,3 +17,12 @@ export function getPlayerView(state: GameState, seat: Seat): PlayerView {
     handCounts: hands.map((h) => h.length),
   };
 }
+
+/**
+ * What a spectator may see: exactly a player's view with no hand at all. The cards on the table
+ * (the trick in play, finished rounds) and card counts are public; nobody's hand is. `viewpoint`
+ * only decides which seat is drawn at the bottom of the table.
+ */
+export function getSpectatorView(state: GameState, viewpoint: Seat = 0): PlayerView {
+  return { ...getPlayerView(state, viewpoint), myHand: [] };
+}

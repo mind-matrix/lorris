@@ -60,6 +60,8 @@ export const NET_CONFIG = {
   seatReservationMs: 120_000,
   /** Most newcomers (not yet seated) the host keeps track of at once. */
   maxGuests: 12,
+  /** Most spectators a room allows at once. */
+  maxSpectators: 12,
   /** How long clients wait for a missing host before asking whether to keep waiting. */
   hostWaitMs: 180_000,
   /** How long to look for a room before telling the player it couldn't be found. */

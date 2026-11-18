@@ -2,8 +2,11 @@
 
 import type { Action, GameConfig, Phase, PlayerView, Seat, Suit } from '../core';
 
-/** Bump whenever a message changes shape. HELLO and REJECTED must never change. */
-export const PROTOCOL_VERSION = 3;
+/**
+ * Bump whenever a message changes shape. HELLO and REJECTED must never change.
+ * 4: spectators (SPECTATE, SPECTATING, LOBBY.spectators) and playing again in the same room.
+ */
+export const PROTOCOL_VERSION = 4;
 
 /** Fields every message carries. `seq` increases per sender. */
 export interface Envelope {
@@ -101,7 +104,12 @@ export type ClientMessageBody =
   /** Take a seat in a game in progress: a specific open seat, or null for any open seat. */
   | { type: 'TAKE_SEAT'; seat: Seat | null }
   /** "Can we pause?" The host decides. */
-  | { type: 'PAUSE_REQUEST' };
+  | { type: 'PAUSE_REQUEST' }
+  /**
+   * Join as a spectator instead of a player: sent in place of HELLO by someone who only wants to
+   * watch. Spectators never get a seat or a hand; they see only what is on the table.
+   */
+  | { type: 'SPECTATE'; name: string };
 
 // ---------- Host -> client ----------
 
@@ -110,6 +118,8 @@ export type HostStatus = 'paused' | 'ended' | 'saved';
 
 export type HostMessageBody =
   | { type: 'WELCOME'; seat: Seat; token: string; roomCode: string; config: GameConfig }
+  /** You're watching. Followed by LOBBY and (once the game has started) spectator VIEWs, which have no hand. */
+  | { type: 'SPECTATING'; roomCode: string; config: GameConfig }
   /** Shape frozen across versions so old clients can always show "please update". */
   | { type: 'REJECTED'; reason: RejectReason; hostVersion: number }
   /**
@@ -124,11 +134,16 @@ export type HostMessageBody =
       policy: JoinPolicy;
       table: TableSummary | null;
       pause: PauseState;
+      /** Names of the people watching. */
+      spectators: string[];
     }
   /** A TAKE_SEAT that didn't work. The newcomer stays connected and can try another seat. */
   | { type: 'SEAT_DENIED'; reason: SeatDeniedReason }
   | { type: 'EVENT'; event: TableEvent }
-  /** This client's view of the game; nothing about other players' hidden cards. */
+  /**
+   * This client's view of the game; nothing about other players' hidden cards. A spectator's VIEW
+   * has an empty hand.
+   */
   | { type: 'VIEW'; stateVersion: number; view: PlayerView }
   | { type: 'ACTION_RESULT'; requestId: number; error: { code: string; message: string } | null }
   /** Carries the latest versions so a client can tell it missed something and ask to RESYNC. */

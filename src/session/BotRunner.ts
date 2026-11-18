@@ -1,7 +1,9 @@
 import type { Bot } from '../ai';
 import type { GameEvent, PlayerView, Seat } from '../core';
 import type { GameHost } from './GameHost';
-import { HALLOWEEN_JOKER_PAUSE_MS, isHalloweenSeason, jokerJustPlayed } from '../seasonal/halloween';
+import { HALLOWEEN_JOKER_PAUSE_MS, jokerJustPlayed } from '../seasonal/halloween';
+import { LAUNCH_JOKER_PAUSE_MS } from '../seasonal/launchWeek';
+import { currentSeason } from '../seasonal/seasons';
 
 /** How long bots wait before acting, so humans can follow along. */
 export interface BotPacing {
@@ -18,6 +20,8 @@ export interface BotPacing {
    * Joker animation. Omitted or 0: no extra pause.
    */
   halloweenJoker?: number;
+  /** The same for the Joker heist animation in GTA VI launch week. Omitted or 0: no extra pause. */
+  launchJoker?: number;
 }
 
 export const DEFAULT_PACING: BotPacing = {
@@ -27,6 +31,7 @@ export const DEFAULT_PACING: BotPacing = {
   nextSet: 4500,
   afterDeal: 1800,
   halloweenJoker: HALLOWEEN_JOKER_PAUSE_MS,
+  launchJoker: LAUNCH_JOKER_PAUSE_MS,
 };
 
 /** Bots that can abandon a search in progress (e.g. the Web Worker bot). Optional. */
@@ -58,7 +63,7 @@ export class BotRunner {
     private host: GameHost,
     private botFor: (seat: Seat) => Bot | null,
     private pacing: BotPacing = DEFAULT_PACING,
-    /** The current time, for the Halloween check (replaceable in tests). */
+    /** The current time, for the seasonal checks (replaceable in tests). */
     private now: () => Date = () => new Date(),
   ) {
     this.unsubscribe = host.onChange(() => this.schedule());
@@ -120,10 +125,11 @@ export class BotRunner {
 
   private delayFor(view: PlayerView): number {
     const base = this.baseDelay(view);
-    // Halloween season: hold off while everyone watches the Joker animation.
-    const joker = this.pacing.halloweenJoker ?? 0;
-    if (joker > 0 && jokerJustPlayed(view.log) && isHalloweenSeason(this.now())) return Math.max(base, joker);
-    return base;
+    // Seasonal themes: hold off while everyone watches the season's Joker animation.
+    if (!jokerJustPlayed(view.log)) return base;
+    const season = currentSeason(this.now());
+    const joker = season === 'halloween' ? this.pacing.halloweenJoker : season === 'neon' ? this.pacing.launchJoker : 0;
+    return joker ? Math.max(base, joker) : base;
   }
 
   private baseDelay(view: PlayerView): number {

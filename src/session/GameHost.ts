@@ -3,6 +3,7 @@ import {
   createGame,
   getLegalActions,
   getPlayerView,
+  getSpectatorView,
   type Action,
   type GameConfig,
   type GameState,
@@ -25,15 +26,19 @@ export class GameHost {
   private listeners = new Map<Seat, Set<Listener>>();
   private changeListeners = new Set<() => void>();
 
-  constructor(config: GameConfig, seed: Seed);
+  /**
+   * `firstVersion`: a new game in the same online room continues the previous game's version
+   * numbers, so clients never mistake the new game's views for stale ones.
+   */
+  constructor(config: GameConfig, seed: Seed, firstVersion?: number);
   constructor(snapshot: { state: GameState; version: number });
-  constructor(a: GameConfig | { state: GameState; version: number }, seed?: Seed) {
+  constructor(a: GameConfig | { state: GameState; version: number }, seed?: Seed, firstVersion = 1) {
     if ('state' in a) {
       this.state = a.state;
       this.stateVersion = a.version;
     } else {
       this.state = createGame(a, seed!);
-      this.stateVersion = 1;
+      this.stateVersion = firstVersion;
     }
   }
 
@@ -61,6 +66,11 @@ export class GameHost {
 
   view(seat: Seat): PlayerView {
     return getPlayerView(this.state, seat);
+  }
+
+  /** A spectator's view: the public table and nobody's hand. */
+  spectatorView(): PlayerView {
+    return getSpectatorView(this.state);
   }
 
   legalActions(seat: Seat): Action[] {

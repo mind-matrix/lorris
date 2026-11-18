@@ -91,6 +91,7 @@ export function newToken(): string {
 
 export class HostSession implements OnlineSession, HostControls {
   readonly isHost = true;
+  readonly spectating = false;
   readonly seats = [HOST_SEAT];
   readonly roomCode: string;
 
@@ -102,6 +103,13 @@ export class HostSession implements OnlineSession, HostControls {
   private makeBot: (seat: Seat) => Bot;
   private onSendHook: HostOptions['onSend'];
   private seed: Seed;
+  /** The seed tests passed in, so later games in the room are deterministic too. */
+  private fixedSeed: Seed | null;
+  /** Games started in this room (playing again starts another). */
+  private gamesStarted = 0;
+  /** The next game's first state version: versions keep rising across games in one room. */
+  private nextGameVersion = 1;
+  private gameOff: (() => void) | null = null;
 
   private lobby: Lobby;
   private lobbyVersion: number;
@@ -113,6 +121,8 @@ export class HostSession implements OnlineSession, HostControls {
   private seatPeer = new Map<Seat, PeerId>();
   /** Newcomers who said HELLO but have no seat yet (choosing one, or waiting for one to open). */
   private guests = new Set<PeerId>();
+  /** People watching (peer -> name). They never get a seat or a hand, only the public table. */
+  private spectators = new Map<PeerId, string>();
   /** When each human seat lost contact (null = connected). */
   private lostAt: (number | null)[];
   private botControlled: boolean[];
@@ -137,6 +147,7 @@ export class HostSession implements OnlineSession, HostControls {
     this.makeBot = opts.makeBot ?? (() => createInGameBot());
     this.onSendHook = opts.onSend;
     this.seed = opts.seed ?? randomSeed();
+    this.fixedSeed = opts.seed ?? null;
 
     this.lobby = opts.saved ? HostSession.lobbyFromSave(opts.saved) : createLobby(opts.config!, opts.hostName!, newToken());
     this.lobbyVersion = opts.saved ? (opts.saved.online?.lobbyVersion ?? 0) + 1 : 1;
@@ -284,7 +295,7 @@ export class HostSession implements OnlineSession, HostControls {
     await this.saveNow();
     const host = this.lobby.seats[HOST_SEAT].name;
     const label = this.envelope().label.text;
-    for (const peer of [...this.seatPeer.values(), ...this.guests]) {
+    for (const peer of this.audience()) {
       this.send(peer, { type: 'HOST_STATUS', status: 'saved', message: `Game saved. ${host} can resume it later.`, label });
     }
     setTimeout(() => this.close(), 300);
@@ -326,13 +337,42 @@ export class HostSession implements OnlineSession, HostControls {
   start(): void {
     if (this.lobby.started) return;
     this.lobby = startLobby(this.lobby);
-    this.startGame(new GameHost(this.lobby.config, this.seed));
+    this.startGame(new GameHost(this.lobby.config, this.seedForGame(this.gamesStarted++), this.nextGameVersion));
     this.changed({ lobby: true, game: true });
+  }
+
+  /**
+   * After a game ends: back to the lobby in the same room, with everyone still in their seats
+   * (and still holding their seat tokens). Spectators keep watching. The host can then adjust
+   * the seats and start a new game, with a fresh deal.
+   */
+  playAgain(): void {
+    if (!this.game || this.game.phase !== 'gameOver') return;
+    this.nextGameVersion = this.game.version + 1;
+    this.stopGame();
+    this.lobby = { ...this.lobby, started: false };
+    this.pause = { paused: false, by: null, resuming: false };
+    this.botControlled = this.botControlled.map(() => false);
+    this.bots.clear();
+    this.changed({ lobby: true });
+  }
+
+  private seedForGame(n: number): Seed {
+    if (n === 0) return this.seed;
+    return typeof this.fixedSeed === 'number' ? this.fixedSeed + n : randomSeed();
+  }
+
+  private stopGame(): void {
+    this.runner?.close();
+    this.runner = null;
+    this.gameOff?.();
+    this.gameOff = null;
+    this.game = null;
   }
 
   /** The host is leaving: end the game for everyone and forget the saved game. */
   leave(): void {
-    for (const peer of [...this.seatPeer.values(), ...this.guests]) {
+    for (const peer of this.audience()) {
       this.send(peer, { type: 'HOST_STATUS', status: 'ended', message: 'The host ended the game.' });
     }
     void this.autosaver?.flush().then(() => this.saves?.delete(hostedSaveId(this.roomCode)));
@@ -352,6 +392,7 @@ export class HostSession implements OnlineSession, HostControls {
     if (this.closed) return;
     this.closed = true;
     this.runner?.close();
+    this.gameOff?.();
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.unsubscribers.forEach((u) => u());
     this.transport.disconnect();
@@ -361,7 +402,7 @@ export class HostSession implements OnlineSession, HostControls {
 
   private startGame(game: GameHost): void {
     this.game = game;
-    this.unsubscribers.push(game.onChange(() => this.changed({ game: true })));
+    this.gameOff = game.onChange(() => this.changed({ game: true }));
     this.runner = new BotRunner(game, (seat) => this.botFor(seat), this.pacing);
     this.runner.schedule();
   }
@@ -425,6 +466,8 @@ export class HostSession implements OnlineSession, HostControls {
       table: this.tableSummary(),
       notice: null,
       pause: this.pause,
+      spectating: false,
+      spectators: [...this.spectators.values()],
     };
   }
 
@@ -434,12 +477,17 @@ export class HostSession implements OnlineSession, HostControls {
     this.changed({ lobby: true });
   }
 
+  /** Everyone in the room who hears from the host: seated players, newcomers and spectators. */
+  private audience(): PeerId[] {
+    return [...this.seatPeer.values(), ...this.guests, ...this.spectators.keys()];
+  }
+
   /** Pushes updates to clients and the host's own UI, and saves the game. */
   private changed(what: { lobby?: boolean; game?: boolean }): void {
     if (this.closed) return;
     if (what.lobby) {
       this.lobbyVersion++;
-      for (const peer of [...this.seatPeer.values(), ...this.guests]) this.sendLobby(peer);
+      for (const peer of this.audience()) this.sendLobby(peer);
       const snap = this.lobbySnapshot();
       for (const l of this.lobbyListeners) l(snap);
       const table = this.tableInfo();
@@ -447,6 +495,7 @@ export class HostSession implements OnlineSession, HostControls {
     }
     if (what.game && this.game) {
       for (const [seat, peer] of this.seatPeer) this.sendView(peer, seat);
+      for (const peer of this.spectators.keys()) this.sendSpectatorView(peer);
       const view = this.game.view(HOST_SEAT);
       for (const l of this.viewListeners) l(view);
     }
@@ -508,6 +557,7 @@ export class HostSession implements OnlineSession, HostControls {
       policy: this.lobby.policy,
       table: this.tableSummary(),
       pause: this.pause,
+      spectators: [...this.spectators.values()],
     });
   }
 
@@ -515,6 +565,12 @@ export class HostSession implements OnlineSession, HostControls {
   private sendView(peer: PeerId, seat: Seat): void {
     if (!this.game) return;
     this.send(peer, { type: 'VIEW', stateVersion: this.game.version, view: this.game.view(seat) });
+  }
+
+  /** A spectator's copy of the table: the same public facts, and no hand at all. */
+  private sendSpectatorView(peer: PeerId): void {
+    if (!this.game) return;
+    this.send(peer, { type: 'VIEW', stateVersion: this.game.version, view: this.game.spectatorView() });
   }
 
   private peerState(peer: PeerId): PeerState {
@@ -550,7 +606,8 @@ export class HostSession implements OnlineSession, HostControls {
 
     if (versionOf(raw) !== PROTOCOL_VERSION) {
       // HELLO's shape never changes, so we can always answer an outdated (or newer) app.
-      if ((raw as { type?: unknown })?.type === 'HELLO') {
+      const type = (raw as { type?: unknown })?.type;
+      if (type === 'HELLO' || type === 'SPECTATE') {
         this.send(from, { type: 'REJECTED', reason: 'VERSION_MISMATCH', hostVersion: PROTOCOL_VERSION });
       }
       return this.strike(from, p);
@@ -584,8 +641,13 @@ export class HostSession implements OnlineSession, HostControls {
           this.sendView(from, p.seat);
         } else if (this.guests.has(from)) {
           this.sendLobby(from);
+        } else if (this.spectators.has(from)) {
+          this.sendLobby(from);
+          this.sendSpectatorView(from);
         }
         return;
+      case 'SPECTATE':
+        return this.spectate(from, p, m.name);
       case 'PAUSE_REQUEST':
         if (p.seat !== null && this.game && !this.pause.paused && p.seat !== HOST_SEAT) {
           const event: TableEvent = { kind: 'pause-requested', seat: p.seat, name: this.lobby.seats[p.seat].name };
@@ -593,7 +655,9 @@ export class HostSession implements OnlineSession, HostControls {
         }
         return;
       case 'TAKE_SEAT': {
-        if (p.seat !== null || !this.guests.has(from)) return;
+        // Newcomers and spectators may take a seat; a spectator who can't get one keeps watching.
+        if (p.seat !== null || (!this.guests.has(from) && !this.spectators.has(from))) return;
+        if (this.spectators.has(from)) p.name ??= this.spectators.get(from)!;
         const reason = this.seatNewcomer(from, p, m.seat);
         if (reason) this.send(from, { type: 'SEAT_DENIED', reason });
         return;
@@ -602,6 +666,7 @@ export class HostSession implements OnlineSession, HostControls {
         return this.send(from, { type: 'PONG', t: m.t, stateVersion: this.game?.version ?? 0, lobbyVersion: this.lobbyVersion });
       case 'LEAVE':
         this.guests.delete(from);
+        if (this.spectators.delete(from)) this.changed({ lobby: true });
         if (p.seat !== null) this.playerLeft(p.seat);
         this.detach(from);
         return;
@@ -653,6 +718,22 @@ export class HostSession implements OnlineSession, HostControls {
     }
   }
 
+  /** Someone who only wants to watch: no seat, no hand, just the public table. */
+  private spectate(from: PeerId, p: PeerState, name: string): void {
+    if (p.seat !== null) return; // seated players play; they don't watch their own game
+    p.name = name;
+    if (!this.spectators.has(from) && this.spectators.size >= this.net.maxSpectators) {
+      return this.send(from, { type: 'REJECTED', reason: 'ROOM_FULL', hostVersion: PROTOCOL_VERSION });
+    }
+    this.guests.delete(from);
+    const isNew = !this.spectators.has(from);
+    this.spectators.set(from, name);
+    this.send(from, { type: 'SPECTATING', roomCode: this.roomCode, config: this.lobby.config });
+    if (isNew) this.changed({ lobby: true });
+    else this.sendLobby(from);
+    this.sendSpectatorView(from);
+  }
+
   /** Whether newcomers are seated automatically right now. Before the start they always are. */
   private autoSeating(): boolean {
     return !this.lobby.started || (this.lobby.policy.midGameJoins && this.lobby.policy.autoAssign);
@@ -696,6 +777,7 @@ export class HostSession implements OnlineSession, HostControls {
     this.botControlled[seat] = false;
     this.lostAt[seat] = null;
     this.guests.delete(from);
+    this.spectators.delete(from);
     this.attach(from, p, seat, token);
     this.runner?.schedule();
     if (started && tookBot) this.broadcastEvent({ kind: 'took-seat', seat, name: p.name! });
@@ -704,7 +786,7 @@ export class HostSession implements OnlineSession, HostControls {
   }
 
   private broadcastEvent(event: TableEvent): void {
-    for (const peer of [...this.seatPeer.values(), ...this.guests]) this.send(peer, { type: 'EVENT', event });
+    for (const peer of this.audience()) this.send(peer, { type: 'EVENT', event });
     for (const l of this.eventListeners) l(event);
   }
 
@@ -746,6 +828,7 @@ export class HostSession implements OnlineSession, HostControls {
 
   private onPeerLeave(peer: PeerId): void {
     this.guests.delete(peer);
+    if (this.spectators.delete(peer)) this.changed({ lobby: true });
     const p = this.peers.get(peer);
     if (p?.seat != null && this.seatPeer.get(p.seat) === peer) this.lostContact(p.seat);
   }
@@ -822,5 +905,11 @@ export class HostSession implements OnlineSession, HostControls {
       }
       if (this.autoSeating()) this.seatNewcomer(peer, p, null);
     }
+    let lostSpectator = false;
+    for (const peer of [...this.spectators.keys()]) {
+      const p = this.peers.get(peer);
+      if (!p || now - p.lastSeen > 2 * this.net.peerTimeoutMs) lostSpectator = this.spectators.delete(peer) || lostSpectator;
+    }
+    if (lostSpectator) this.changed({ lobby: true });
   }
 }

@@ -30,7 +30,7 @@ export async function hostGame(opts: { playerCount: number; name: string; pacing
 }
 
 /** `waitForHost`: the host's name, when rejoining a saved game they may not have reopened yet. */
-export async function joinGame(opts: { roomCode: string; name: string; waitForHost?: string }): Promise<ClientSession> {
+export async function joinGame(opts: { roomCode: string; name: string; waitForHost?: string; spectate?: boolean }): Promise<ClientSession> {
   const session = new ClientSession({ transport: new TrysteroTransport(), storage, ...opts });
   await storage.set(STORAGE_KEYS.lastJoined, opts.roomCode);
   await session.open();

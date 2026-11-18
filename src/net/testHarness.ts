@@ -149,9 +149,11 @@ export function hostSnapshot(host: HostSession): { state: GameState; version: nu
  */
 export function assertNoLeaks(sent: SentRecord[]): number {
   const seatOf = new Map<string, number>();
+  const spectators = new Set<string>();
   let views = 0;
   for (const { to, message, state } of sent) {
     if (message.type === 'WELCOME') seatOf.set(to, message.seat as number);
+    if (message.type === 'SPECTATING') spectators.add(to);
     if (!state) continue;
     const seat = seatOf.get(to);
     const json = JSON.stringify(message);
@@ -164,6 +166,11 @@ export function assertNoLeaks(sent: SentRecord[]): number {
     if (message.type === 'VIEW') {
       views++;
       const view = message.view as { seat: number; myHand: string[] };
+      if (spectators.has(to) && seat === undefined) {
+        // A spectator's view: never any hand at all.
+        if (view.myHand.length !== 0) throw new Error(`spectator ${to} was sent a hand`);
+        continue;
+      }
       if (view.seat !== seat) throw new Error(`VIEW for seat ${view.seat} sent to ${to} (seat ${seat})`);
       if (JSON.stringify(view.myHand) !== JSON.stringify(state.hands[seat!])) throw new Error('VIEW hand mismatch');
     }

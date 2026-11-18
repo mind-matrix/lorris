@@ -1,6 +1,6 @@
 # Lorris network protocol
 
-Version: **3** (`PROTOCOL_VERSION` in `protocol.ts`). Version 2 added mid-game joining; version 3 added pausing, saving and resuming.
+Version: **4** (`PROTOCOL_VERSION` in `protocol.ts`). Version 2 added mid-game joining; version 3 added pausing, saving and resuming; version 4 added spectators and playing again in the same room.
 
 Online games are peer to peer over WebRTC data channels (Trystero). Public Nostr relays are used
 only to find peers; game data never passes through them.
@@ -61,7 +61,8 @@ Every message is a JSON object with:
 | `PING` | `t: int` | Heartbeat, every `heartbeatIntervalMs` (3 s). |
 | `LEAVE` | none | Leaving on purpose. In the lobby the seat is freed; mid-game it becomes an open bot seat at once. |
 | `PAUSE_REQUEST` | none | "Can we pause?" The host decides. If they say no, the requester gets `EVENT pause-declined`. |
-| `TAKE_SEAT` | `seat: int \| null` | A newcomer (no seat yet) asks for a seat: a specific one, or `null` for any open seat. Answered with `WELCOME` or `SEAT_DENIED`. |
+| `TAKE_SEAT` | `seat: int \| null` | A newcomer or spectator (no seat yet) asks for a seat: a specific one, or `null` for any open seat. Answered with `WELCOME` or `SEAT_DENIED`. A spectator who is denied keeps watching. |
+| `SPECTATE` | `name: string` | Join to watch, sent **instead of** `HELLO` (to each peer as it appears, and on every heartbeat until `SPECTATING` arrives). Answered with `SPECTATING`, or `REJECTED ROOM_FULL` beyond `maxSpectators` (12). The host never seats a spectator by itself. |
 
 Rules for `name` and `token`:
 - **`name`:** trimmed, with control, invisible and text-direction characters removed. At most
@@ -82,11 +83,12 @@ Any other fields are ignored.
 | Type | Fields | Meaning |
 |---|---|---|
 | `WELCOME` | `seat`, `token`, `roomCode`, `config` | You're seated. Store `token` (IndexedDB) to reclaim the seat later. The client resets its stored versions, because a host that resumed from a save may be one step behind what the client last saw. |
+| `SPECTATING` | `roomCode`, `config` | You're watching. Followed by `LOBBY` and, once the game has started, `VIEW`s with an empty hand. |
 | `REJECTED` | `reason`, `hostVersion` | `VERSION_MISMATCH`, `ROOM_FULL`, `GAME_IN_PROGRESS`, `KICKED` or `RATE_LIMITED`. **Shape is frozen**, so any app version can show "please update". |
-| `LOBBY` | `lobbyVersion: int`, `seats: SeatInfo[]`, `started: bool`, `policy: JoinPolicy`, `table: TableSummary \| null`, `pause: PauseState` | Who sits where, whether they're connected, the join rules, and (once started) public facts about the game. Sent whenever that changes, to seated players **and to newcomers without a seat**. Ignored unless `lobbyVersion` is newer than the last one received. |
+| `LOBBY` | `lobbyVersion: int`, `seats: SeatInfo[]`, `started: bool`, `policy: JoinPolicy`, `table: TableSummary \| null`, `pause: PauseState`, `spectators: string[]` | Who sits where, whether they're connected, the join rules, (once started) public facts about the game, and the names of the people watching. Sent whenever that changes, to seated players, **newcomers without a seat, and spectators**. Ignored unless `lobbyVersion` is newer than the last one received. `started` going from `true` to `false` means the host chose to play again (see below). |
 | `SEAT_DENIED` | `reason` | A seat request that didn't work: `SEAT_TAKEN`, `RESERVED`, `NOT_OPEN`, `JOINS_DISABLED` or `NO_OPEN_SEATS`. It's also sent as `SEAT_EXPIRED` on a `HELLO` carrying the token of a seat that was given up. The newcomer stays connected. |
 | `EVENT` | `event` | Table news. Clients write the wording themselves. Kinds: `took-seat {seat, name}` ("Priya took over a bot seat."), `returned {seat, name}` (a player got their seat back from a bot after a resume), and `pause-declined` (sent to the player who asked). `pause-requested` is host-only and is never sent over the network. |
-| `VIEW` | `stateVersion: int`, `view: PlayerView` | The recipient's view after every change. Ignored unless `stateVersion` is newer, or if `view.seat` isn't the recipient's seat. |
+| `VIEW` | `stateVersion: int`, `view: PlayerView` | The recipient's view after every change. Ignored unless `stateVersion` is newer, or if `view.seat` isn't the recipient's seat. A spectator's `VIEW` is `getSpectatorView(state)`: the public table drawn from seat 0, with `myHand: []`; spectators drop any `VIEW` that carries a hand. |
 | `ACTION_RESULT` | `requestId`, `error: {code, message} \| null` | The answer to an `ACTION`. `code` is a rules-engine error code (such as `NOT_YOUR_TURN`) or `NOT_SEATED`. |
 | `PONG` | `t`, `stateVersion`, `lobbyVersion` | Reply to `PING`. If either version is ahead of the client's, the client missed a message and sends `RESYNC` (at most once a second). |
 | `HOST_STATUS` | `status: 'ended' \| 'saved'`, `message`, `label?` | `ended`: the host closed the game, and clients forget it. `saved`: the host saved the game and closed the room. Clients keep their seat token and a small reference (`label` holds the names and score only), so they can rejoin when the host resumes. `paused` is reserved and unused. |
@@ -215,6 +217,31 @@ The design is to pause and wait for the host, with a timeout:
   a bot seat, their token gets it back (`EVENT returned`).
 - **After a crash:** the latest autosave is resumed the same way.
 
+### Spectators
+
+- **Joining:** a spectator sends `SPECTATE` instead of `HELLO`. The host adds them to its spectators (separate
+  from newcomers, so auto-assign never seats them) and replies `SPECTATING`, `LOBBY` and, mid-game, `VIEW`.
+- **What they see:** the same public facts as everyone (trick in play, finished rounds, calls, trump, scores,
+  card counts) and **no hand at all**. Their `VIEW` is built by `getSpectatorView`, which removes every hand.
+- **What they can't do:** an `ACTION` gets `NOT_SEATED`; `PAUSE_REQUEST` is ignored; voice messages are ignored
+  (voice is for seated players only).
+- **Taking a seat:** a spectator may send `TAKE_SEAT`. Before the start this claims an empty or bot seat; on
+  success they get `WELCOME` and are a player from then on.
+- **Leaving:** `LEAVE`, a peer leaving, or silence for twice `peerTimeoutMs` removes them from the list.
+- **Limit:** `maxSpectators` (12). `HOST_STATUS` and `EVENT`s reach spectators too.
+- **Version mismatch:** the host answers an outdated `SPECTATE` with `REJECTED VERSION_MISMATCH`, as for
+  `HELLO`. (A host older than version 4 doesn't know `SPECTATE`, so the spectator times out with "Couldn't find
+  that game".)
+
+### Playing again
+
+- When a game is over, the host can play again: the lobby goes back to `started: false` with every seat as it
+  was (humans keep their seats and tokens, bots stay bots) and spectators keep watching. Everyone gets `LOBBY`.
+- Clients drop the finished game's view on `started` going to `false`, and show the lobby.
+- The host starts the next game as usual (`start`), with a fresh seed. Its state versions **continue** from the
+  finished game's (the new game's first version is the old last version + 1), so clients never mistake the new
+  game's views for stale ones, even if they missed the `started: false` lobby.
+
 ### Version mismatch
 
 - **Client is the wrong version:** the host answers its `HELLO` with `REJECTED
@@ -229,8 +256,10 @@ or the envelope fields `v` and `seq`.
 
 ## Voice chat (alongside the game protocol)
 
-Voice chat streams live. A player holds the round mic button to talk, or taps it to start and
-taps again to stop. Nothing is sent while nobody is talking.
+Voice chat streams live, in the lobby and during the game. A seated player holds the round mic
+button to talk, or taps it to start and taps again to stop. Nothing is sent while nobody is talking.
+One voice controller lives for the whole online session, so the voice connection carries on from the
+lobby into the game (and back, when playing again). Spectators neither talk nor hear voices.
 
 **Topology.** Each player has one voice connection (a separate WebRTC connection) to the host.
 A talker sends one stream to the host, and the host forwards it to everyone else at the table.

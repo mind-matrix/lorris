@@ -24,6 +24,7 @@ describe('client message validation', () => {
       { type: 'TAKE_SEAT', seat: 2 },
       { type: 'TAKE_SEAT', seat: null },
       { type: 'PAUSE_REQUEST' },
+      { type: 'SPECTATE', name: 'Watcher' },
     ]) {
       expect(parseClientMessage(msg(body)).ok, JSON.stringify(body)).toBe(true);
     }
@@ -43,6 +44,8 @@ describe('client message validation', () => {
     expect(reject(msg({ type: 'TAKE_SEAT', seat: 'any' }))).toBe('bad seat');
     expect(reject(msg({ type: 'TAKE_SEAT', seat: 99 }))).toBe('bad seat');
     expect(reject({ v: PROTOCOL_VERSION, type: 'PING', t: 1 })).toBe('bad seq');
+    expect(reject(msg({ type: 'SPECTATE', name: '​' }))).toBe('bad name');
+    expect(reject(msg({ type: 'SPECTATE' }))).toBe('bad name');
   });
 
   it('rejects unknown message types', () => {
@@ -90,13 +93,26 @@ describe('host message validation', () => {
     expect(parseHostMessage(msg({ type: 'VIEW', stateVersion: 3, view })).ok).toBe(true);
     const policy = { midGameJoins: true, autoAssign: true };
     const pause = { paused: false, by: null, resuming: false };
-    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 2, seats, started: false, policy, table: null, pause })).ok).toBe(true);
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 2, seats, started: false, policy, table: null, pause, spectators: [] })).ok).toBe(true);
     const table = { setNumber: 2, phase: 'playing', scores: [5, -8], tricksWon: [1, 2], trump: 'H', contract: { seat: 1, value: 5 }, handCounts: [5, 5, 6, 6], turn: 2 };
     const reserved = [...seats.slice(0, 3), { kind: 'reserved', name: 'Ben', status: 'bot-controlled', reservedMs: 90_000 }];
-    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats: reserved, started: true, policy, table, pause })).ok).toBe(true);
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats: reserved, started: true, policy, table, pause, spectators: ['Watcher'] })).ok).toBe(true);
     // A table summary with anything card-like or out of range is refused.
-    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy, table: { ...table, handCounts: [5, 5] }, pause })).ok).toBe(false);
-    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy: { midGameJoins: 'yes' }, table, pause })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy, table: { ...table, handCounts: [5, 5] }, pause, spectators: [] })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy: { midGameJoins: 'yes' }, table, pause, spectators: ['Watcher'] })).ok).toBe(false);
+    // Spectators are a list of names; a v3 lobby without the list (or a junk list) is refused.
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy, table, pause })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy, table, pause, spectators: [7] })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy, table, pause, spectators: Array(13).fill('x') })).ok).toBe(false);
+    const cleaned = parseHostMessage(msg({ type: 'LOBBY', lobbyVersion: 3, seats, started: true, policy, table, pause, spectators: [' Zoe ', '​'] }));
+    expect(cleaned.ok && cleaned.message.type === 'LOBBY' && cleaned.message.spectators).toEqual(['Zoe']);
+  });
+
+  it('accepts SPECTATING, and a spectator view with no hand', () => {
+    expect(parseHostMessage(msg({ type: 'SPECTATING', roomCode: 'ABCDEF', config: makeConfig(4) })).ok).toBe(true);
+    expect(parseHostMessage(msg({ type: 'SPECTATING', roomCode: 'ABCDEF', config: {} })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'SPECTATING', config: makeConfig(4) })).ok).toBe(false);
+    expect(parseHostMessage(msg({ type: 'VIEW', stateVersion: 3, view: { ...view, myHand: [] } })).ok).toBe(true);
   });
 
   it('accepts seat denials and events, and only known reasons and kinds', () => {

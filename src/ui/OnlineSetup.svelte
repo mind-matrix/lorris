@@ -17,7 +17,7 @@
     initialCode?: string | null;
     busy?: boolean;
     onhost: (opts: { name: string; playerCount: number }) => void;
-    onjoin: (opts: { name: string; roomCode: string }) => void;
+    onjoin: (opts: { name: string; roomCode: string; spectate: boolean }) => void;
     onback: () => void;
   } = $props();
 
@@ -26,6 +26,8 @@
   let code = $state(untrack(() => (initialCode ? formatRoomCode(initialCode) : '')));
   let playerCount = $state<number>(SUPPORTED_PLAYER_COUNTS[0]);
   let error = $state<string | null>(null);
+  /** Join only to watch: no seat and no cards. */
+  let spectate = $state(false);
 
   loadName().then((n) => (name ||= n));
 
@@ -36,7 +38,7 @@
     if (mode === 'host') return onhost({ name: clean, playerCount });
     const roomCode = normalizeRoomCode(code);
     if (!roomCode) return (error = `Room codes are ${ROOM_CODE_LENGTH} letters and numbers, like ABC-234.`);
-    onjoin({ name: clean, roomCode });
+    onjoin({ name: clean, roomCode, spectate });
   }
 </script>
 
@@ -79,12 +81,19 @@
           required
         />
       </label>
+      <label class="check">
+        <input type="checkbox" bind:checked={spectate} />
+        <span>
+          Just watch
+          <small>Join as a spectator: see the cards on the table, but no one's hand. You won't take a seat.</small>
+        </span>
+      </label>
     {/if}
 
     {#if error}<p class="error" role="alert">{error}</p>{/if}
 
     <button class="btn big" type="submit" disabled={busy}>
-      {busy ? 'Please wait…' : mode === 'host' ? 'Create room' : 'Join'}
+      {busy ? 'Please wait…' : mode === 'host' ? 'Create room' : spectate ? 'Watch' : 'Join'}
     </button>
     <button class="btn secondary" type="button" onclick={onback}>Back</button>
   </form>
@@ -159,6 +168,26 @@
   .hint {
     margin: 8px 0 0;
     text-align: center;
+    font-size: 0.85rem;
+    color: var(--muted);
+  }
+  .check {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+  }
+  .check input {
+    min-height: 0;
+    width: 22px;
+    height: 22px;
+    margin: 2px 0 0;
+    accent-color: var(--accent);
+    flex: none;
+  }
+  .check small {
+    display: block;
+    font-weight: 400;
     font-size: 0.85rem;
     color: var(--muted);
   }

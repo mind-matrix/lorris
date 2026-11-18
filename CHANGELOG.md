@@ -3,6 +3,27 @@
 ## Unreleased
 
 ### Added
+- Voice chat in the lobby: seated players can talk before the game starts, with the same mic button, and a
+  talking player's seat shows bouncing bars. The voice connection carries on into the game and back.
+- Play again in the same room: when a game ends, the host taps "Play again" and everyone returns to the lobby
+  in their seats, with the same room code. The host can add or remove bots, newcomers can take empty seats, and
+  the next game starts with a fresh deal. Players and spectators see "Waiting for the host…" meanwhile.
+- Spectators: tick "Just watch" when joining a game to watch instead of play, before or during the game. A
+  spectator sees the cards on the table (the round in play and finished rounds), scores, calls and card counts,
+  but never anyone's hand: the host sends spectators a view with no hand at all. Spectators can't move, pause
+  or talk, and are never seated automatically; before the start they can choose "Take a seat and play". The
+  lobby lists who is watching. Up to 12 spectators per room.
+- GTA VI launch week theme, November 18 to 25, 2026 (India time), celebrating the game's release. An original
+  fan theme (no Rockstar logos, art, fonts or music; not affiliated with Rockstar Games):
+  - A neon "sunset city" look: teal felt with hot-pink rims, sunset-orange and cyan teams, glowing buttons, and
+    a photo of downtown Miami at sunset behind the menus, tinted violet and pink and slowly drifting ("Miami
+    Sunset" by Joe deSousa, CC0, via Wikimedia Commons).
+  - "Lorris" as a buzzing pink neon sign on the home page.
+  - Original synthwave background music (A minor, 96 BPM), synthesized in the app with no audio files.
+  - Playing the Joker shows the "Joker heist" to every player: police-light sweeps, the Joker spinning in, a
+    neon sign, five stars lighting up and cash raining down, with a synth siren sting. Tap to skip; reduced
+    motion shows a still version. Bots wait for it before their next move.
+  - The final score shows "Mission complete".
 - Voice chat in online games, streaming live: a round mic button at the right of the controls. Hold it to talk
   while held, or tap it to start talking and tap again to stop. Voices go through the host to everyone at the
   table (no team channels, in keeping with the no-table-talk rule), and each talker's seat glows. Built for the
@@ -27,6 +48,7 @@
   on the device.
 
 ### Changed
+- The online protocol is now version 4 (spectators, playing again). Everyone in a room needs the updated app.
 - Playtest fixes for readability:
   - The trump suit in the top bar is now a gold tile with a large suit symbol, and it pops in when chosen.
   - Calls are easy to read: each player's call shows as "Call 5" (or "Pass") in a large bubble under their seat,

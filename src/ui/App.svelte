@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
   import SettingsSheet from './SettingsSheet.svelte';
   import HalloweenDecor from './seasonal/HalloweenDecor.svelte';
+  import NeonDecor from './seasonal/NeonDecor.svelte';
   import { HalloweenMusic } from './seasonal/halloweenMusic';
+  import { NeonMusic } from './seasonal/neonMusic';
+  import { createVoiceChat, type VoiceChat } from './voiceChat.svelte';
+  import type { SeasonId } from '../seasonal/seasons';
   import { audioContext, audioState } from './audio.svelte';
   import { settings } from './settings.svelte';
   import { applySeason, season, watchSeason } from './season.svelte';
@@ -45,29 +49,47 @@
 
   // Seasonal theme: follow the date, and put the theme on the page.
   onMount(() => watchSeason());
-  $effect(() => applySeason(season.halloween));
+  $effect(() => applySeason(season.id));
 
-  // Halloween-season music: plays once sound is unlocked (the first tap), while the app is on
-  // screen and Music is on in Settings. Quieter during a game, so it never covers the table.
+  // Seasonal music (Halloween, GTA VI launch week): plays once sound is unlocked (the first tap),
+  // while the app is on screen and Music is on in Settings. Quieter during a game, so it never
+  // covers the table.
   const MUSIC_LEVEL_IN_GAME = 0.45;
-  let music: HalloweenMusic | null = null;
+  let music: { season: SeasonId; player: HalloweenMusic | NeonMusic } | null = null;
   $effect(() => {
-    const wanted = season.halloween && settings.music && audioState.unlocked && audioState.visible;
+    const id = season.id;
+    const wanted = id !== null && settings.music && audioState.unlocked && audioState.visible;
     const level = screen.kind === 'game' ? MUSIC_LEVEL_IN_GAME : 1;
-    if (!wanted) {
-      music?.stop();
+    if (!wanted || music?.season !== id) {
+      music?.player.stop();
       music = null;
-      return;
     }
+    if (!wanted) return;
     if (!music) {
       const ctx = audioContext();
       if (!ctx) return;
-      music = new HalloweenMusic(ctx);
-      music.setLevel(level);
-      music.start();
-    } else music.setLevel(level);
+      const player = id === 'halloween' ? new HalloweenMusic(ctx) : new NeonMusic(ctx);
+      music = { season: id, player };
+      player.setLevel(level);
+      player.start();
+    } else music.player.setLevel(level);
   });
-  onDestroy(() => music?.stop());
+  onDestroy(() => music?.player.stop());
+
+  // Voice chat lives as long as the online session: from the lobby, through the game, and back
+  // to the lobby when playing again, so nobody has to set it up twice.
+  const onlineSession = $derived(screen.kind === 'lobby' ? screen.session : screen.kind === 'game' ? screen.online : null);
+  let voiceChat = $state.raw<VoiceChat | null>(null);
+  $effect(() => {
+    const s = onlineSession;
+    if (!s) return;
+    const chat = untrack(() => createVoiceChat(s));
+    voiceChat = chat;
+    return () => {
+      chat?.dispose();
+      voiceChat = null;
+    };
+  });
   let busy = $state(false);
   let setupError = $state<string | null>(null);
   let menuMessage = $state<string | null>(null);
@@ -113,13 +135,15 @@
     };
   });
 
-  // If a client loses its seat mid-game (it was given up while they were away), go back to
-  // the seat picker so they can take an open seat.
+  // Back to the lobby screen from the table when:
+  // - the host chose "Play again" (the room is back in the lobby, everyone still seated), or
+  // - a client lost its seat mid-game (given up while they were away), to pick an open seat.
   $effect(() => {
-    if (screen.kind !== 'game' || !screen.online || screen.online.isHost) return;
+    if (screen.kind !== 'game' || !screen.online) return;
     const online = screen.online;
     return online.subscribeLobby((l) => {
-      if (l.started && l.mySeat === null && l.connection.kind === 'connected') screen = { kind: 'lobby', session: online };
+      const lostSeat = !online.isHost && !l.spectating && l.started && l.mySeat === null && l.connection.kind === 'connected';
+      if (!l.started || lostSeat) screen = { kind: 'lobby', session: online };
     });
   });
 
@@ -181,7 +205,7 @@
       screen = { kind: 'lobby', session };
     });
 
-  const join = (opts: { name: string; roomCode: string }) =>
+  const join = (opts: { name: string; roomCode: string; spectate?: boolean }) =>
     withBusy(async () => {
       const session = await (await online()).joinGame(opts);
       screen = { kind: 'lobby', session };
@@ -345,8 +369,13 @@
       session={screen.session}
       onexit={leaveGame}
       {leaveChoice}
-      leaveQuestion={screen.online ? 'Leave? A bot will take your seat.' : 'Leave this game? It is not saved.'}
+      leaveQuestion={screen.online?.spectating
+        ? 'Stop watching this game?'
+        : screen.online
+          ? 'Leave? A bot will take your seat.'
+          : 'Leave this game? It is not saved.'}
       online={screen.online}
+      {voiceChat}
       updateAvailable={pwaState.updateAvailable}
       onupdate={updateNow}
     />
@@ -354,7 +383,7 @@
 {:else if screen.kind === 'lobby'}
   {@const session = screen.session}
   {#key session}
-    <LobbyScreen {session} onstarted={() => (screen = { kind: 'game', session, online: session })} onexit={toMenu} />
+    <LobbyScreen {session} {voiceChat} onstarted={() => (screen = { kind: 'game', session, online: session })} onexit={toMenu} />
   {/key}
 {:else if screen.kind === 'setup'}
   <OnlineSetup
@@ -422,9 +451,11 @@
   {/if}
 {/if}
 
-<!-- Halloween scenery behind the menus (not over the table, where it would distract). -->
+<!-- Seasonal scenery behind the menus (not over the table, where it would distract). -->
 {#if season.halloween && screen.kind !== 'game'}
   <HalloweenDecor />
+{:else if season.neon && screen.kind !== 'game'}
+  <NeonDecor />
 {/if}
 
 <!-- The full banner only where nobody is mid-game: the start screen, saved games, and setup. -->

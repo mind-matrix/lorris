@@ -6,6 +6,7 @@
   let {
     roomCode,
     paused,
+    canPause = true,
     onpause,
     onclose,
     onmessage,
@@ -14,6 +15,8 @@
   }: {
     roomCode: string;
     paused: boolean;
+    /** Spectators can't ask for a pause. */
+    canPause?: boolean;
     onpause: () => void;
     onclose: () => void;
     onmessage: (t: string) => void;
@@ -39,6 +42,7 @@
     </div>
   {/if}
   <button class="btn big" onclick={share}>Share invite link</button>
+  {#if canPause}
   <button
     class="btn secondary"
     disabled={paused}
@@ -49,6 +53,7 @@
   >
     {paused ? 'The game is paused' : 'Ask the host to pause'}
   </button>
+  {/if}
   <button class="btn secondary" onclick={onclose}>Done</button>
 </div>
 

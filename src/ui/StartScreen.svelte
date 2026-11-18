@@ -72,8 +72,9 @@
       />
     </svg>
   </button>
-  <h1 class:spooky={season.halloween}>Lorris</h1>
+  <h1 class:spooky={season.halloween} class:neon={season.neon}>Lorris</h1>
   {#if season.halloween}<p class="season" aria-hidden="true">🎃 Happy Halloween 🦇</p>{/if}
+  {#if season.neon}<p class="season neon-tag">🌴 GTA VI launch week 🌆</p>{/if}
   <p class="tag">The game of big promises and bigger comebacks</p>
 
   {#if message}<p class="message" role="alert">{message}</p>{/if}
@@ -201,6 +202,47 @@
     -webkit-text-fill-color: transparent;
     filter: drop-shadow(0 2px 0 #2a0005) drop-shadow(0 0 14px rgba(255, 30, 30, 0.35));
     animation: flicker 6s ease-in-out infinite;
+  }
+  /* GTA VI launch week: the name as a pink neon sign that buzzes on, with a cyan echo. */
+  h1.neon {
+    margin-top: 24px;
+    font-size: clamp(2.8rem, 14vw, 3.8rem);
+    font-style: italic;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    color: #fff;
+    text-shadow:
+      0 0 4px #fff,
+      0 0 12px #ff4fa3,
+      0 0 28px #ff4fa3,
+      0 0 52px #b3156a,
+      4px 4px 0 rgba(53, 224, 255, 0.55);
+    animation: neon-buzz 7s linear infinite;
+  }
+  @keyframes neon-buzz {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    61% {
+      opacity: 1;
+    }
+    62% {
+      opacity: 0.35;
+    }
+    63% {
+      opacity: 1;
+    }
+    65% {
+      opacity: 0.6;
+    }
+    66% {
+      opacity: 1;
+    }
+  }
+  .neon-tag {
+    color: var(--team-b);
+    text-shadow: 0 0 10px rgba(53, 224, 255, 0.55);
   }
   .season {
     margin: -6px 0 0;

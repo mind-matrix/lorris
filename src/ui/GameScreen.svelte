@@ -14,14 +14,12 @@
   import SetSummary from './SetSummary.svelte';
   import TrumpPicker from './TrumpPicker.svelte';
   import HalloweenJoker from './seasonal/HalloweenJoker.svelte';
+  import NeonJoker from './seasonal/NeonJoker.svelte';
   import SettingsSheet from './SettingsSheet.svelte';
   import LeaveDialog from './LeaveDialog.svelte';
   import MicButton from './MicButton.svelte';
-  import { VoiceGuest, VoiceHost } from '../net/voiceRtc';
-  import { NetworkQuality } from '../net/networkQuality';
-  import { sampleNetwork } from './networkSample';
-  import { browserVoiceDeps, micLevel, voiceSupported } from './voiceBrowser';
-  import { isHalloweenSeason } from '../seasonal/halloween';
+  import type { VoiceChat } from './voiceChat.svelte';
+  import { currentSeason, type SeasonId } from '../seasonal/seasons';
   import { TEAM_NAME } from './labels';
   import { DEAL_FLIGHT_MS, DEAL_STEP_MS, ROUND_LINGER_MS, dealDurationMs } from './timing';
 
@@ -33,6 +31,7 @@
     online = null,
     updateAvailable = false,
     onupdate,
+    voiceChat = null,
   }: {
     session: GameSession;
     onexit: () => void;
@@ -44,7 +43,14 @@
     /** A new app version is waiting: shown quietly in the menu, never over the table. */
     updateAvailable?: boolean;
     onupdate?: () => void;
+    /** Online: the room's voice chat (shared with the lobby), or null without voice. */
+    voiceChat?: VoiceChat | null;
   } = $props();
+
+  /** Watching only: no hand, no moves, nobody's cards but those on the table. */
+  const spectator = $derived(online?.spectating === true);
+  /** Online host: can start another game in the same room once this one is over. */
+  const hostControls = $derived(online?.isHost ? (online as OnlineSession & HostControls) : null);
 
   // The UI only ever holds player views, one per human seat on this device.
   let views = $state<Record<Seat, PlayerView>>({});
@@ -56,173 +62,30 @@
   let coverFor = $state<Seat | null>(null);
   let toast = $state<string | null>(null);
   let lastSeq = -1;
-  /** Halloween season: the Joker was just played, so the haunted portrait is on screen. */
-  let jokerScare = $state<{ key: number; player: string } | null>(null);
+  /** Seasonal themes: the Joker was just played, so that season's animation is on screen. */
+  let jokerScare = $state<{ key: number; player: string; season: SeasonId } | null>(null);
   let settingsOpen = $state(false);
 
   // ---------- Voice chat (online games) ----------
-  // The round mic button: hold to talk, or tap to start and tap again to stop. Voices stream
-  // live through the host. Nothing is sent while nobody talks, the microphone is only open
-  // around talking, and the button greys out while the network is too slow.
-  let voice: VoiceHost | VoiceGuest | null = null;
-  let micVisible = $state(false);
-  let micTalking = $state(false);
-  let micLatched = $state(false);
-  let micElapsed = $state(0);
-  let micBlocked = $state(false);
-  let micReset = $state(0);
-  let micPermission: 'unknown' | 'granted' | 'denied' = 'unknown';
-  let netSlow = $state(false);
-  /** Seats talking right now. */
-  let talkingSeats = $state<ReadonlySet<Seat>>(new Set());
-  let talkTimer: ReturnType<typeof setInterval> | null = null;
-  let talkMeter: { level(): number; stop(): void } | null = null;
-  let toldAboutTableTalk = false;
-
-  /** A tapped-on mic switches off after this long with no sound. */
-  const LATCHED_SILENCE_MS = 20_000;
-  const SILENCE_LEVEL = 0.02;
-
+  // The room's voice chat lives in App (it carries on from the lobby); this screen shows its mic
+  // button and its messages. Spectators listen to nobody and can't talk: voice is for the table.
+  const micVisible = $derived(voiceChat !== null && !spectator);
   $effect(() => {
-    const access = online?.voice();
-    if (!access || !voiceSupported()) return;
-    const v = access.isHost ? new VoiceHost(browserVoiceDeps(access)) : new VoiceGuest(browserVoiceDeps(access));
-    voice = v;
-    if (v instanceof VoiceGuest) {
-      v.onForcedStop = () => {
-        endTalkUi();
-        showToast('Voice turns off after 2 minutes of talking. Tap to talk again.');
-      };
-    }
-    const offState = v.subscribe((s) => (talkingSeats = s.talking));
-    const quality = new NetworkQuality(() =>
-      sampleNetwork(async () => {
-        const link = access.link;
-        if (!access.isHost) {
-          const host = access.hostPeer();
-          return host ? link.linkStats(host) : null;
-        }
-        // The host talks to everyone: typical round trip, and the weakest outgoing link.
-        const all = (await Promise.all([...access.seatedPeers().keys()].map((p) => link.linkStats(p)))).filter((x) => x !== null);
-        if (all.length === 0) return null;
-        const rtts = all.map((x) => x!.rttMs).filter((r): r is number => r !== null).sort((a, b) => a - b);
-        const outs = all.map((x) => x!.outgoingKbps).filter((k): k is number => k !== null);
-        return { rttMs: rtts.length ? rtts[Math.floor(rtts.length / 2)] : null, outgoingKbps: outs.length ? Math.min(...outs) : null };
-      }),
-    );
-    const offQuality = quality.subscribe((slow) => (netSlow = slow));
-    const onVisibility = () => (document.visibilityState === 'hidden' ? quality.stop() : quality.start());
-    document.addEventListener('visibilitychange', onVisibility);
-    quality.start();
-    micVisible = true;
+    const chat = voiceChat;
+    if (!chat) return;
+    chat.onmessage = showToast;
     return () => {
-      offState();
-      offQuality();
-      quality.stop();
-      document.removeEventListener('visibilitychange', onVisibility);
-      endTalkUi();
-      v.dispose();
-      voice = null;
-      micVisible = false;
-      talkingSeats = new Set();
+      if (chat.onmessage === showToast) chat.onmessage = () => {};
     };
   });
 
-  function endTalkUi() {
-    micTalking = false;
-    micLatched = false;
-    if (talkTimer) clearInterval(talkTimer);
-    talkTimer = null;
-    talkMeter?.stop();
-    talkMeter = null;
-  }
-
-  async function micStart(latched: boolean) {
-    const v = voice;
-    if (!v) return;
-    if (latched) {
-      micLatched = true; // a tap: keep talking until the next tap
-      return;
-    }
-    if (micPermission !== 'granted') {
-      // First press: just ask for the microphone. Talking starts with the next press.
-      micReset++;
-      try {
-        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-        for (const t of s.getTracks()) t.stop();
-        micPermission = 'granted';
-        micBlocked = false;
-        showToast('Microphone ready. Hold the mic to talk, or tap to start and tap again to stop.');
-      } catch {
-        micPermission = 'denied';
-        micBlocked = true;
-        showToast('No microphone access, so you can hear others but not talk.');
-      }
-      return;
-    }
-    micTalking = true;
-    micLatched = false;
-    micElapsed = 0;
-    const startedAt = performance.now();
-    let lastSound = startedAt;
-    talkTimer = setInterval(() => {
-      const now = performance.now();
-      micElapsed = now - startedAt;
-      // Tapped on and forgotten: switch off after a long silence.
-      const stream = v.micStream();
-      if (stream && !talkMeter) talkMeter = micLevel(stream);
-      if (!talkMeter || talkMeter.level() > SILENCE_LEVEL) lastSound = now;
-      if (micLatched && now - lastSound > LATCHED_SILENCE_MS) {
-        micStop();
-        showToast('Mic off after 20 seconds of silence. Tap to talk again.');
-      }
-    }, 250);
-    const ok = await v.startTalking();
-    if (!ok) {
-      endTalkUi();
-      micReset++;
-      micBlocked = true;
-      showToast('No microphone access, so you can hear others but not talk.');
-      return;
-    }
-    if (!micTalking) {
-      // Released before the microphone was ready.
-      v.stopTalking();
-      return;
-    }
-    if (!toldAboutTableTalk) {
-      toldAboutTableTalk = true;
-      showToast('Everyone at the table hears you. No talking about your cards!');
-    }
-  }
-
-  function micStop() {
-    endTalkUi();
-    voice?.stopTalking();
-    micReset++;
-  }
-
-  async function micUnavailable() {
-    if (micBlocked) {
-      // Maybe they've allowed the microphone in settings since.
-      try {
-        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-        for (const t of s.getTracks()) t.stop();
-        micPermission = 'granted';
-        micBlocked = false;
-        showToast('Microphone ready. Hold the mic to talk, or tap to start and tap again to stop.');
-      } catch {
-        showToast("Microphone access is blocked. Allow it in your browser's site settings to talk.");
-      }
-      return;
-    }
-    if (netSlow) showToast('Your connection is slow right now, so voice is paused.');
-  }
-
   /** A seat's voice indicator: glowing while they talk. */
   function voiceOf(seat: Seat): 'none' | 'speaking' {
-    return talkingSeats.has(seat) || (seat === activeSeat && micTalking) ? 'speaking' : 'none';
+    return voiceChat?.isSpeaking(seat) ? 'speaking' : 'none';
   }
+
+  /** Whether a seat is this device's own player (never, for a spectator). */
+  const isMine = (seat: Seat) => !spectator && seat === activeSeat;
   let roomOpen = $state(false);
   let guestMenuOpen = $state(false);
   let leaveOpen = $state(false);
@@ -256,6 +119,24 @@
   // untracked; otherwise this effect would depend on that state and resubscribe in a loop.
   $effect(() => {
     const current = session;
+    if (spectator && online?.watch) {
+      // Spectators follow the public table; the view's seat is just where the table is drawn from.
+      const watched = online;
+      return untrack(() => {
+        const offs = [
+          watched.watch!((v) => {
+            views[v.seat] = v;
+            activeSeat = v.seat;
+            onEvents(v);
+          }),
+          current.subscribeTable((t) => (table = t)),
+        ];
+        return () => {
+          offs.forEach((u) => u());
+          clearTimeout(toastTimer);
+        };
+      });
+    }
     return untrack(() => {
       const seats = current.seats;
       activeSeat = seats[0];
@@ -291,15 +172,16 @@
       const text = describe(e);
       if (text) showToast(text);
       // Every player's device sees the same public event, so everyone gets the animation.
-      if (!firstView && e.type === 'CARD_PLAYED' && e.card === JOKER && isHalloweenSeason()) {
-        jokerScare = { key: e.seq, player: whoPlayed(e.seat) };
+      if (!firstView && e.type === 'CARD_PLAYED' && e.card === JOKER) {
+        const season = currentSeason();
+        if (season) jokerScare = { key: e.seq, player: whoPlayed(e.seat), season };
       }
     }
   }
 
   /** "You" when this device has a single player and it's them; otherwise their name. */
   function whoPlayed(seat: Seat): string {
-    if (session.seats.length === 1 && session.seats[0] === seat) return 'You';
+    if (!spectator && session.seats.length === 1 && session.seats[0] === seat) return 'You';
     return names[seat] ?? 'Someone';
   }
 
@@ -332,9 +214,10 @@
   }
 
   const view = $derived(views[activeSeat]);
-  const legal = $derived(view ? getLegalActionsFromView(view) : []);
+  // A spectator's view has no hand and no moves.
+  const legal = $derived(view && !spectator ? getLegalActionsFromView(view) : []);
   const playable = $derived(
-    view?.phase === 'playing' && view.turn === activeSeat && !(table?.pause?.paused ?? false)
+    !spectator && view?.phase === 'playing' && view.turn === activeSeat && !(table?.pause?.paused ?? false)
       ? legal.flatMap((a) => (a.type === 'PLAY_CARD' ? [a.card] : []))
       : null,
   );
@@ -406,7 +289,7 @@
 
   // Prompt under the hand when it's my lead, since an empty table doesn't say "your move".
   const leadHint = $derived.by(() => {
-    if (!view || paused || view.phase !== 'playing' || view.turn !== activeSeat || view.trick.plays.length > 0) return null;
+    if (!view || spectator || paused || view.phase !== 'playing' || view.turn !== activeSeat || view.trick.plays.length > 0) return null;
     return view.completedTricks.at(-1)?.winner === activeSeat ? 'You won that round: lead the next card' : 'Your lead: play any card';
   });
 
@@ -414,15 +297,16 @@
 
   const status = $derived.by(() => {
     if (!view || view.turn === null) return '';
-    if (dealing) return view.dealer === activeSeat ? 'You are dealing…' : `${names[view.dealer]} is dealing…`;
-    const who = view.turn === activeSeat ? 'You' : names[view.turn];
+    if (dealing) return isMine(view.dealer) ? 'You are dealing…' : `${names[view.dealer]} is dealing…`;
+    const mine = isMine(view.turn);
+    const who = mine ? 'You' : names[view.turn];
     switch (view.phase) {
       case 'bidding':
-        return view.turn === activeSeat ? '' : `${who} is calling…`;
+        return mine ? '' : `${who} is calling…`;
       case 'choosingTrump':
-        return view.turn === activeSeat ? '' : `${who} is choosing trump…`;
+        return mine ? '' : `${who} is choosing trump…`;
       case 'playing':
-        return view.turn === activeSeat ? 'Your turn' : `${names[view.turn]}'s turn`;
+        return mine ? 'Your turn' : `${names[view.turn]}'s turn`;
       default:
         return '';
     }
@@ -454,7 +338,7 @@
             isDealer={view.dealer === seat}
             bid={bidOf(seat)}
             called={view.phase !== 'bidding' && view.contract?.seat === seat ? view.contract.value : null}
-            isMe={seat === activeSeat}
+            isMe={isMine(seat)}
             status={table?.seats[seat]?.kind === 'human' || table?.seats[seat]?.kind === 'reserved' ? table.seats[seat].status : 'connected'}
             voice={voiceOf(seat)}
           />
@@ -532,31 +416,37 @@
         <p class="status">{status}</p>
       {:else if paused}
         <p class="status">Paused</p>
-      {:else if view.phase === 'bidding' && view.turn === activeSeat}
+      {:else if view.phase === 'bidding' && isMine(view.turn ?? -1)}
         <BidPanel {legal} onact={act} />
-      {:else if view.phase === 'choosingTrump' && view.turn === activeSeat}
+      {:else if view.phase === 'choosingTrump' && isMine(view.turn ?? -1)}
         <TrumpPicker onpick={(suit) => act({ type: 'CHOOSE_TRUMP', suit })} />
       {:else}
         <p class="status">{status}</p>
       {/if}
-      {#if micVisible}
+      {#if micVisible && voiceChat}
         <div class="mic-slot">
           <MicButton
-            recording={micTalking}
-            latched={micLatched}
-            elapsedMs={micElapsed}
-            slow={netSlow}
-            blocked={micBlocked}
-            resetToken={micReset}
-            onstart={micStart}
-            onstop={micStop}
-            onabort={micStop}
-            onunavailable={micUnavailable}
+            recording={voiceChat.talking}
+            latched={voiceChat.latched}
+            elapsedMs={voiceChat.elapsedMs}
+            slow={voiceChat.slow}
+            blocked={voiceChat.blocked}
+            resetToken={voiceChat.resetToken}
+            onstart={voiceChat.start}
+            onstop={voiceChat.stop}
+            onabort={voiceChat.stop}
+            onunavailable={voiceChat.unavailable}
           />
         </div>
       {/if}
     </section>
 
+    {#if spectator}
+      <div class="watching" role="note">
+        <span aria-hidden="true">👀</span>
+        <span><b>Watching</b> · You see the cards on the table, never anyone's hand.</span>
+      </div>
+    {:else}
     {#key dealSeq}
       <Hand
         cards={view.myHand}
@@ -568,6 +458,7 @@
         onplay={(card) => act({ type: 'PLAY_CARD', card })}
       />
     {/key}
+    {/if}
   </div>
 
   {#if showSummary}
@@ -577,6 +468,9 @@
       canDeal={legal.some((a) => a.type === 'NEXT_SET')}
       ondeal={() => act({ type: 'NEXT_SET' })}
       onnewgame={onexit}
+      onplayagain={hostControls ? () => hostControls.playAgain() : undefined}
+      waitForHost={online !== null && !online.isHost}
+      {spectator}
     />
   {/if}
 
@@ -584,6 +478,7 @@
     <GuestMenu
       roomCode={online.roomCode}
       {paused}
+      canPause={!spectator}
       onpause={() => {
         online.requestPause?.();
         showToast('Asked the host to pause.');
@@ -642,7 +537,11 @@
 
   {#if jokerScare}
     {#key jokerScare.key}
-      <HalloweenJoker player={jokerScare.player} onclose={() => (jokerScare = null)} />
+      {#if jokerScare.season === 'neon'}
+        <NeonJoker player={jokerScare.player} onclose={() => (jokerScare = null)} />
+      {:else}
+        <HalloweenJoker player={jokerScare.player} onclose={() => (jokerScare = null)} />
+      {/if}
     {/key}
   {/if}
 
@@ -758,6 +657,21 @@
     margin: 0;
     line-height: 44px;
     font-weight: 600;
+  }
+  /* In place of the hand, for spectators. */
+  .watching {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 72px;
+    margin: 0 8px 8px;
+    padding: 10px 14px;
+    border-radius: 14px;
+    background: var(--panel);
+    box-shadow: inset 0 0 0 1px var(--line);
+    font-size: 0.9rem;
+    text-align: center;
   }
   .deal {
     position: absolute;

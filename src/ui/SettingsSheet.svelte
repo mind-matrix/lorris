@@ -2,6 +2,7 @@
   import { settings, updateSettings } from './settings.svelte';
   import { season } from './season.svelte';
   import { HALLOWEEN_SEASON_END_LABEL } from '../seasonal/halloween';
+  import { LAUNCH_WEEK_END_LABEL } from '../seasonal/launchWeek';
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -25,7 +26,7 @@
   <div class="row">
     <div class="text">
       <span id="sfx-label" class="label">Sound effects</span>
-      <span class="hint">Like the Joker's laugh in Halloween season</span>
+      <span class="hint">Like the Joker's moment in seasonal themes</span>
     </div>
     <button
       class="switch"
@@ -41,7 +42,7 @@
   <div class="row">
     <div class="text">
       <span id="music-label" class="label">Music</span>
-      <span class="hint">Background music in Halloween season</span>
+      <span class="hint">Background music in seasonal themes</span>
     </div>
     <button
       class="switch"
@@ -56,6 +57,17 @@
 
   {#if season.halloween}
     <p class="season">🎃 The Halloween theme is on until {HALLOWEEN_SEASON_END_LABEL}.</p>
+  {:else if season.neon}
+    <p class="season">
+      🌴 The GTA VI launch week theme is on until {LAUNCH_WEEK_END_LABEL}. A fan celebration, not affiliated with
+      Rockstar Games.
+    </p>
+    <p class="season credit">
+      Background photo: "Miami Sunset" by Joe deSousa, public domain (CC0), via
+      <a href="https://commons.wikimedia.org/wiki/File:Miami_Sunset_(45863661094).jpg" target="_blank" rel="noopener noreferrer"
+        >Wikimedia Commons</a
+      >.
+    </p>
   {/if}
 </div>
 
@@ -167,6 +179,14 @@
     border-top: 1px solid var(--line);
     font-size: 0.9rem;
     color: var(--muted);
+  }
+  .season.credit {
+    border-top: none;
+    padding-top: 0;
+    font-size: 0.8rem;
+  }
+  .credit a {
+    color: inherit;
   }
   @keyframes rise {
     from {

@@ -8,5 +8,5 @@ export { legalCards, trickWinner, beats, leadRequirement, misdealTeam, decidedWi
 export { createGame } from './deal';
 export { applyAction } from './reducer';
 export { getLegalActions, getLegalActionsFromView, legalActionsFor, highestBid } from './legal';
-export { getPlayerView } from './view';
+export { getPlayerView, getSpectatorView } from './view';
 export { setDelta } from './scoring';

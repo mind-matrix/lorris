@@ -1,7 +1,7 @@
 // A client: joins a room, shows the views the host sends, and sends intents back.
 // Never holds more than its own player view. Everything from the network is validated first.
 
-import { getLegalActionsFromView, type Action, type PlayerView, type Seat } from '../core';
+import { getLegalActionsFromView, type Action, type GameConfig, type PlayerView, type Seat } from '../core';
 import { STORAGE_KEYS, type ClientGameRef, type KeyValueStore } from '../session/storage';
 import type { ConnectionState, LobbySnapshot, OnlineSession, SessionError, TableInfo, VoiceAccess } from '../session/types';
 import { NET_CONFIG, type NetConfig } from './config';
@@ -34,6 +34,8 @@ export interface ClientOptions {
    * "waiting for <hostName> to resume") instead of giving up after the join timeout.
    */
   waitForHost?: string;
+  /** Join only to watch: no seat, no hand, just the public table. */
+  spectate?: boolean;
 }
 
 interface SavedSeat {
@@ -88,6 +90,12 @@ export class ClientSession implements OnlineSession {
   private notice: string | null = null;
   private pause: PauseState = { paused: false, by: null, resuming: false };
   private waitForHost: string | null;
+  /** Asked to watch rather than play (until a seat is taken). */
+  private wantsToWatch: boolean;
+  /** The host confirmed we're a spectator (SPECTATING). */
+  private watching = false;
+  private spectators: string[] = [];
+  private config: GameConfig | null = null;
   private eventListeners = new Set<(e: TableEvent) => void>();
   private connection: ConnectionState = { kind: 'connecting' };
   private welcomed = false;
@@ -116,6 +124,19 @@ export class ClientSession implements OnlineSession {
     this.name = opts.name;
     this.net = opts.net ?? NET_CONFIG;
     this.waitForHost = opts.waitForHost ?? null;
+    this.wantsToWatch = opts.spectate ?? false;
+  }
+
+  /** Whether this device is watching the game rather than playing. */
+  get spectating(): boolean {
+    return this.watching;
+  }
+
+  /** Spectators: the public table after every change (a view with no hand). */
+  watch(listener: (view: PlayerView) => void): () => void {
+    this.viewListeners.add(listener);
+    if (this.view && this.watching) listener(this.view);
+    return () => this.viewListeners.delete(listener);
   }
 
   get seats(): Seat[] {
@@ -160,7 +181,7 @@ export class ClientSession implements OnlineSession {
     return {
       link,
       isHost: false,
-      playerCount: this.view?.config.playerCount ?? this.table?.handCounts.length ?? 6,
+      playerCount: this.config?.playerCount ?? this.view?.config.playerCount ?? this.table?.handCounts.length ?? 6,
       mySeat: () => this.seats[0] ?? null,
       seatedPeers: () => new Map(),
       hostPeer: () => this.hostPeer,
@@ -270,7 +291,9 @@ export class ClientSession implements OnlineSession {
     this.transport.disconnect();
   }
 
+  /** How we knock: HELLO to play (or reclaim our seat), or SPECTATE to only watch. */
   private helloBody(): ClientMessageBody {
+    if (this.wantsToWatch && this.mySeat === null) return { type: 'SPECTATE', name: this.name };
     return { type: 'HELLO', name: this.name, token: this.token };
   }
 
@@ -302,7 +325,7 @@ export class ClientSession implements OnlineSession {
       const looking = this.hostPeer === null || this.lostAt !== null;
       if (!looking) return;
       if (m.type === 'REJECTED' && !this.welcomed) return this.handle(from, m);
-      if (m.type !== 'WELCOME' && m.type !== 'LOBBY') return;
+      if (m.type !== 'WELCOME' && m.type !== 'LOBBY' && m.type !== 'SPECTATING') return;
       this.adoptHost(from);
     }
     this.lastHostSeen = Date.now();
@@ -327,7 +350,23 @@ export class ClientSession implements OnlineSession {
         this.token = m.token;
         this.welcomed = true;
         this.notice = null;
+        this.config = m.config;
+        // A spectator who took a seat plays from now on.
+        if (this.watching) {
+          this.watching = false;
+          this.view = null;
+        }
+        this.wantsToWatch = false;
         void this.storage.set(STORAGE_KEYS.seat(this.roomCode), { token: m.token, seat: m.seat } satisfies SavedSeat);
+        this.setConnection({ kind: 'connected' });
+        return;
+      case 'SPECTATING':
+        if (m.roomCode !== this.roomCode || this.mySeat !== null) return;
+        this.hostPeer = from;
+        this.watching = true;
+        this.welcomed = true;
+        this.notice = null;
+        this.config = m.config;
         this.setConnection({ kind: 'connected' });
         return;
       case 'REJECTED':
@@ -338,6 +377,10 @@ export class ClientSession implements OnlineSession {
       case 'LOBBY': {
         if (m.lobbyVersion <= this.lobbyVersion) return;
         this.lobbyVersion = m.lobbyVersion;
+        // The host started over in the same room (play again): the finished game's view is gone.
+        // The new game's state versions carry on from the old ones, so its views are never "stale".
+        if (this.started && !m.started) this.view = null;
+        this.spectators = m.spectators;
         const now = Date.now();
         this.seatInfo = m.seats.map((seat) => (seat.reservedMs === undefined ? seat : { ...seat, reservedUntil: now + seat.reservedMs }));
         this.started = m.started;
@@ -363,10 +406,11 @@ export class ClientSession implements OnlineSession {
         for (const l of this.eventListeners) l(m.event);
         return;
       case 'VIEW':
-        if (m.stateVersion <= this.stateVersion || m.view.seat !== this.mySeat) return; // stale, or not ours
+        if (m.stateVersion <= this.stateVersion) return; // stale
+        if (this.watching ? m.view.myHand.length > 0 : m.view.seat !== this.mySeat) return; // not ours (spectators never hold cards)
         this.stateVersion = m.stateVersion;
         this.view = m.view;
-        if (m.view.phase === 'gameOver') void this.storage.delete(STORAGE_KEYS.clientRef(this.roomCode)); // finished games aren't kept
+        if (m.view.phase === 'gameOver' && !this.watching) void this.storage.delete(STORAGE_KEYS.clientRef(this.roomCode)); // finished games aren't kept
         return this.notify({ view: true });
       case 'ACTION_RESULT': {
         const p = this.pending.get(m.requestId);
@@ -491,6 +535,8 @@ export class ClientSession implements OnlineSession {
       table: this.table,
       notice: this.notice,
       pause: this.pause,
+      spectating: this.watching,
+      spectators: this.spectators,
     };
   }
 

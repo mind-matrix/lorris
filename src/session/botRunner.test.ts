@@ -104,9 +104,10 @@ describe('BotRunner: thinking during the delay', () => {
   });
 });
 
-describe('BotRunner: Halloween Joker pause', () => {
+describe('BotRunner: seasonal Joker pause', () => {
   const HALLOWEEN = new Date('2026-10-30T12:00:00Z');
   const NOVEMBER = new Date('2026-11-10T12:00:00Z');
+  const LAUNCH_WEEK = new Date('2026-11-21T12:00:00Z');
 
   /** Bids and picks trump with the first legal actions, then plays until the Joker has just been played. */
   function hostWithJokerJustPlayed() {
@@ -143,10 +144,23 @@ describe('BotRunner: Halloween Joker pause', () => {
     runner.close();
   });
 
-  it('outside Halloween season, or with no pause configured, the usual delay applies', async () => {
+  it('in GTA VI launch week, bots wait for the Joker heist animation', async () => {
+    const host = hostWithJokerJustPlayed();
+    const v0 = host.version;
+    const runner = runnerAt(host, LAUNCH_WEEK, { ...PACING, halloweenJoker: 5900, launchJoker: 4500 });
+    runner.schedule();
+    await vi.advanceTimersByTimeAsync(4499);
+    expect(host.version).toBe(v0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(host.version).toBe(v0 + 1);
+    runner.close();
+  });
+
+  it('outside the seasons, or with no pause configured, the usual delay applies', async () => {
     for (const [now, pacing] of [
-      [NOVEMBER, { ...PACING, halloweenJoker: 5900 }],
+      [NOVEMBER, { ...PACING, halloweenJoker: 5900, launchJoker: 4500 }],
       [HALLOWEEN, PACING],
+      [LAUNCH_WEEK, { ...PACING, halloweenJoker: 5900 }],
     ] as const) {
       const host = hostWithJokerJustPlayed();
       const v0 = host.version;
